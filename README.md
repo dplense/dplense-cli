@@ -1,6 +1,6 @@
 # GDrive Audit
 
-**gdaudit** is a professional-grade CLI tool for auditing Google Drive permissions. It helps security administrators discover, analyze, and remediate external file shares across Google Workspace with minimal false positives and maximum automation support.
+**gdaudit** CLI tool for auditing Google Drive permissions. It helps to analyze and remediate external file shares across Google Workspace.
 
 ## Features
 
