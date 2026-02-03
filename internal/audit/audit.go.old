@@ -1,0 +1,346 @@
+package audit
+
+import (
+	"fmt"
+	"strings"
+
+	"gdrive-audit/internal/drive"
+	"gdrive-audit/internal/ui"
+
+	driveapi "google.golang.org/api/drive/v3"
+)
+
+func contains(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+// isSameOrganization checks if an email belongs to the same organization (danads.com or danads.se)
+func isSameOrganization(email string) bool {
+	if email == "" {
+		return false
+	}
+	emailLower := strings.ToLower(email)
+	return strings.HasSuffix(emailLower, "@danads.com") || strings.HasSuffix(emailLower, "@danads.se")
+}
+
+func getDomainWideDelegationHelp() string {
+	return `DOMAIN-WIDE DELEGATION SETUP REQUIRED:
+
+The service account needs OAuth scopes authorized in Google Admin Console.
+
+Steps to fix:
+1. Get your Service Account Client ID (shown when running the tool)
+2. Go to: https://admin.google.com
+3. Navigate to: Security > API Controls > Domain-wide Delegation
+4. Click "Add new" or edit your existing service account
+5. Enter the Client ID
+6. Authorize these OAuth scopes (comma-separated):
+   https://www.googleapis.com/auth/drive.metadata.readonly,https://www.googleapis.com/auth/drive.readonly
+7. Click "Authorize"
+8. Wait a few minutes for changes to propagate, then try again
+
+Note: You need Super Admin privileges to configure domain-wide delegation.`
+}
+
+func FindAndRevokeShares(srv *driveapi.Service, targetDomain string, interactive bool) error {
+	fmt.Printf("\n--- Scanning for files shared with domain: %s ---\n", targetDomain)
+	fmt.Println("Note: The Google Drive API does not support filtering by 'shared with domain'.")
+	fmt.Println("Scanning ALL files to find matches. This may take a while...")
+
+	// Reset found files data if using table format
+	if ui.GetOutputFormat() == ui.FormatTable {
+		ui.ResetFoundFilesData()
+	}
+
+	query := "trashed = false"
+	pageToken := ""
+	fileCount := 0
+	resolver := drive.NewMetadataResolver(srv)
+
+	ui.Debug("Starting file scan with query: %s", query)
+
+	for {
+		ui.Debug("Fetching file list page... (PageToken: %s)", pageToken)
+		r, err := srv.Files.List().
+			Q(query). 
+			PageSize(100).
+			Fields("nextPageToken, files(id, name, webViewLink, permissions, parents, driveId, owners(displayName, emailAddress, me))").
+			PageToken(pageToken).
+			SupportsAllDrives(true).
+			IncludeItemsFromAllDrives(true).
+			Corpora("allDrives").
+			Do()
+
+		if err != nil {
+			return fmt.Errorf("failed to list files: %w", err)
+		}
+
+		if len(r.Files) == 0 {
+			break
+		}
+
+		fileCount += len(r.Files)
+		if fileCount%100 == 0 {
+			fmt.Printf("Scanned %d files...\n", fileCount)
+		}
+
+		for _, f := range r.Files {
+			ui.Debug("Checking file: %s (ID: %s)", f.Name, f.Id)
+			for _, p := range f.Permissions {
+				isMatch := false
+				permissionIdentifier := ""
+
+				if p.Type == "domain" && p.Domain == targetDomain {
+					ui.Debug("  -> Match found (Domain): %s", p.Domain)
+					isMatch = true
+					permissionIdentifier = p.Domain
+				} else if (p.Type == "user" || p.Type == "group") && strings.HasSuffix(p.EmailAddress, "@"+targetDomain) {
+					ui.Debug("  -> Match found (User/Group): %s", p.EmailAddress)
+					isMatch = true
+					permissionIdentifier = p.EmailAddress
+				}
+
+				if isMatch {
+					driveName := resolver.GetDriveName(f)
+					folderName := "Root/Orphan"
+					if len(f.Parents) > 0 {
+						folderName = resolver.GetFolderName(f.Parents[0])
+					}
+
+					ui.PrintFoundFile(f, driveName, folderName, permissionIdentifier, p)
+
+					shouldRevoke := !interactive || ui.ConfirmAction(fmt.Sprintf("Do you want to REVOKE access for %s on this file? (y/N): ", permissionIdentifier))
+
+					if shouldRevoke {
+						if err := revokePermission(srv, f.Id, p.Id); err != nil {
+							return fmt.Errorf("failed to revoke permission %s for file %s: %w", p.Id, f.Id, err)
+						} else {
+							fmt.Printf("SUCCESS: Access revoked for %s.\n", permissionIdentifier)
+						}
+					} else {
+						fmt.Println("SKIP: Access revocation skipped.")
+					}
+				}
+			}
+		}
+
+		pageToken = r.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+
+	fmt.Printf("\n--- Scan Complete. Checked %d files. ---\n", fileCount)
+
+	// Print table if table format is selected
+	if ui.GetOutputFormat() == ui.FormatTable {
+		ui.PrintFoundFilesTable()
+	}
+
+	return nil
+}
+
+func ListExternalShares(srv *driveapi.Service, isImpersonating bool) error {
+	about, err := srv.About.Get().Fields("user").Do()
+	if err != nil {
+		errStr := err.Error()
+		if contains(errStr, "unauthorized_client") || contains(errStr, "unauthorized") {
+			return fmt.Errorf("unable to get user info: %w\n\n%s\n\nTIP: With domain-wide delegation, you must use the -impersonate flag.\nExample: -list-external -impersonate user@yourdomain.com", err, getDomainWideDelegationHelp())
+		}
+		return fmt.Errorf("unable to get user info: %w", err)
+	}
+	userEmail := about.User.EmailAddress
+	parts := strings.Split(userEmail, "@")
+	var myDomain string
+	if len(parts) > 1 {
+		myDomain = parts[1]
+	}
+
+	fmt.Printf("Auditing external shares for user: %s (Domain: %s)\n", userEmail, myDomain)
+	fmt.Println("Scanning ALL files... This may take a while.")
+
+	// Reset external files data if using table format
+	if ui.GetOutputFormat() == ui.FormatTable {
+		ui.ResetExternalFilesData()
+	}
+
+	query := "trashed = false"
+	pageToken := ""
+	fileCount := 0
+	foundCount := 0
+	resolver := drive.NewMetadataResolver(srv)
+
+	ui.Debug("Starting external share scan for user: %s", userEmail)
+
+	for {
+		ui.Debug("Fetching file list page... (PageToken: %s)", pageToken)
+		r, err := srv.Files.List().
+			Q(query).
+			PageSize(100).
+			Fields("nextPageToken, files(id, name, webViewLink, permissions, parents, driveId, owners(displayName, emailAddress, me))").
+			PageToken(pageToken).
+			SupportsAllDrives(true).
+			IncludeItemsFromAllDrives(true).
+			Corpora("allDrives").
+			Do()
+
+		if err != nil {
+			return fmt.Errorf("failed to list files: %w", err)
+		}
+
+		if len(r.Files) == 0 {
+			break
+		}
+
+		fileCount += len(r.Files)
+		if fileCount%100 == 0 {
+			fmt.Printf("Scanned %d files...\n", fileCount)
+		}
+
+		for _, f := range r.Files {
+			// Get owner email to check if file is owned by someone in the same organization
+			var ownerEmail string
+			if len(f.Owners) > 0 && f.Owners[0].EmailAddress != "" {
+				ownerEmail = f.Owners[0].EmailAddress
+			}
+
+			for _, p := range f.Permissions {
+				isExternal := false
+
+				if p.Type == "anyone" {
+					isExternal = true
+				} else if p.Type == "user" || p.Type == "group" {
+					if myDomain != "" && !strings.HasSuffix(p.EmailAddress, "@"+myDomain) {
+						isExternal = true
+					} else if myDomain == "" {
+						if p.EmailAddress != userEmail {
+							isExternal = true
+						}
+					}
+				} else if p.Type == "domain" {
+					if p.Domain != myDomain {
+						isExternal = true
+					}
+					// Exclude domain shares for danads.com/danads.se if owner is also from the organization
+					if isExternal && ownerEmail != "" {
+						domainLower := strings.ToLower(p.Domain)
+						if (domainLower == "danads.com" || domainLower == "danads.se") && isSameOrganization(ownerEmail) {
+							ui.Debug("Skipping internal domain share: owner %s -> domain %s (both in same organization)", ownerEmail, p.Domain)
+							isExternal = false
+						}
+					}
+				}
+
+				// Exclude shares between users within the same organization (danads.com/danads.se)
+				if isExternal && ownerEmail != "" && p.EmailAddress != "" {
+					if isSameOrganization(ownerEmail) && isSameOrganization(p.EmailAddress) {
+						ui.Debug("Skipping internal share: owner %s -> %s (both in same organization)", ownerEmail, p.EmailAddress)
+						isExternal = false
+					}
+				}
+
+				if isExternal {
+					foundCount++
+					driveName := resolver.GetDriveName(f)
+					ownerName := resolver.GetOwnerName(f)
+					folderName := "Root/Orphan"
+					if len(f.Parents) > 0 {
+						folderName = resolver.GetFolderName(f.Parents[0])
+					}
+
+					ui.PrintExternalFile(f, driveName, ownerName, folderName, p)
+				}
+			}
+		}
+
+		pageToken = r.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+
+	fmt.Printf("\n--- Scan Complete. Checked %d files. Found %d externally shared files. ---\n", fileCount, foundCount)
+
+	// Print table if table format is selected
+	if ui.GetOutputFormat() == ui.FormatTable {
+		ui.PrintExternalFilesTable()
+	}
+
+	return nil
+}
+
+func ListSharedDrives(srv *driveapi.Service, adminAccess bool, isImpersonating bool) error {
+	fmt.Println("--- Listing All Drives ---")
+	if adminAccess {
+		if !isImpersonating {
+			fmt.Println("WARNING: Using -list-all-drives without -impersonate may not work with domain-wide delegation.")
+			fmt.Println("Service accounts need to impersonate a user to access domain resources.")
+		}
+		fmt.Println("(Using Domain Admin Access)")
+	} else if !isImpersonating {
+		fmt.Println("NOTE: Using -list-drives without -impersonate. With domain-wide delegation,")
+		fmt.Println("you may need to use -impersonate to see Shared Drives.")
+	}
+	fmt.Println("[Personal] Name: My Drive | ID: root")
+
+	pageToken := ""
+	count := 0
+
+	for {
+		query := srv.Drives.List().
+			PageSize(100).
+			Fields("nextPageToken, drives(id, name)")
+
+		if pageToken != "" {
+			query = query.PageToken(pageToken)
+		}
+
+		if adminAccess {
+			query = query.UseDomainAdminAccess(true)
+		}
+
+		ui.Debug("Querying Shared Drives API (adminAccess: %v, isImpersonating: %v, pageToken: %s)", adminAccess, isImpersonating, pageToken)
+		r, err := query.Do()
+		if err != nil {
+			// Check for common OAuth errors
+			errStr := err.Error()
+			if contains(errStr, "unauthorized_client") || contains(errStr, "unauthorized") {
+				return fmt.Errorf("unable to list shared drives: %w\n\n%s", err, getDomainWideDelegationHelp())
+			}
+			if adminAccess && !isImpersonating {
+				return fmt.Errorf("unable to list shared drives: %w\n\nTIP: With domain-wide delegation, you must use -impersonate flag with an admin email.\nExample: -list-all-drives -impersonate admin@yourdomain.com", err)
+			}
+			return fmt.Errorf("unable to list shared drives: %w", err)
+		}
+
+		ui.Debug("API Response: received %d drives in this page, nextPageToken: %s", len(r.Drives), r.NextPageToken)
+		for _, d := range r.Drives {
+			count++
+			ui.PrintSharedDrive(count, d)
+		}
+
+		pageToken = r.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+
+	fmt.Printf("--- Total Shared Drives found: %d ---\n", count)
+	if count == 0 && !isImpersonating {
+		fmt.Println("\nTIP: If you expected to see Shared Drives, try using the -impersonate flag:")
+		fmt.Println("  ./gdrive-audit -list-drives -impersonate user@yourdomain.com")
+		fmt.Println("  ./gdrive-audit -list-all-drives -impersonate admin@yourdomain.com")
+	}
+	return nil
+}
+
+func revokePermission(srv *driveapi.Service, fileID, permissionID string) error {
+	err := srv.Permissions.Delete(fileID, permissionID).
+		SupportsAllDrives(true).
+		Do()
+
+	if err != nil {
+		return fmt.Errorf("API call failed: %w", err)
+	}
+	return nil
+}

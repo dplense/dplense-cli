@@ -1,0 +1,69 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+gdrive-audit
+gdaudit
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Credentials and sensitive files
+credentials.json
+token.json
+*.key
+*.pem
+*.p12
+*.json
+!go.mod
+!go.sum
+!package.json
+!tsconfig.json
+
+# Configuration files (may contain sensitive data)
+config.yaml
+.gdaudit/
+*.env
+.env*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Build artifacts
+dist/
+build/
+bin/
+
+# Test fixtures (if they contain sensitive data)
+test/fixtures/credentials*.json
