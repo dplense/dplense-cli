@@ -1,93 +1,447 @@
 # GDrive Audit
 
+**gdaudit** is a professional-grade CLI tool for auditing Google Drive permissions. It helps security administrators discover, analyze, and remediate external file shares across Google Workspace with minimal false positives and maximum automation support.
 
+## Features
 
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab.da.local/admins/gdrive-audit.git
-git branch -M main
-git push -uf origin main
-```
-
-## Integrate with your tools
-
-* [Set up project integrations](https://gitlab.da.local/admins/gdrive-audit/-/settings/integrations)
-
-## Collaborate with your team
-
-* [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- **Scanning**: Scan active users, suspended users, shared drives, or specific users
+- **Filtering**: Filter by external email patterns (with wildcard support), public links, or specific domains
+- **Multiple Output Formats**: Generate reports in table, JSON, CSV, or Excel formats
+- **Interactive TUI**: EXPEREMENTAL!! Terminal user interface with real-time progress and detailed file views
+- **Permission Revocation**: Safely revoke external permissions from files or users
+- **Configurable**: YAML-based configuration with domain whitelisting/blacklisting
+- **Color-Coded Output**: Visual indicators for status, risk levels, and log messages
+- **Progress Tracking**: Real-time progress bars and detailed scanning statistics
 
 ## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+
+### Prerequisites
+
+- Go 1.19 or later
+- Google Workspace Admin access
+- Service Account with Domain-Wide Delegation configured
+
+### Build from Source
+
+```bash
+git clone https://gitlab.da.local/admins/gdrive-audit.git
+cd gdrive-audit
+go build -o gdaudit ./cmd/gdaudit
+```
+
+### Binary Installation
+
+Download the latest release binary for your platform and add it to your PATH.
+
+## Quick Start
+
+### 1. Initialize Configuration
+
+Run the interactive setup wizard:
+
+```bash
+gdaudit init
+```
+
+This will:
+- Create configuration directory (`~/.gdaudit/`)
+- Guide you through setting up credentials
+- Create a default configuration file
+
+### 2. Configure Google Workspace
+
+1. **Create a Service Account**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project or select existing one
+   - Enable Google Drive API and Admin SDK API
+   - Create a service account and download JSON credentials
+
+2. **Configure Domain-Wide Delegation**:
+   - Go to [Google Admin Console](https://admin.google.com)
+   - Navigate to Security > API Controls > Domain-wide Delegation
+   - Add your service account with these scopes:
+     - `https://www.googleapis.com/auth/drive.readonly`
+     - `https://www.googleapis.com/auth/drive.metadata.readonly`
+     - `https://www.googleapis.com/auth/admin.directory.user.readonly` (for user enumeration)
+
+3. **Place Credentials**:
+   ```bash
+   cp /path/to/credentials.json ~/.gdaudit/credentials.json
+   ```
+
+### 3. Run Your First Scan
+
+```bash
+# Scan shared drives
+gdaudit scan --scope shared-drives
+
+# Scan with impersonation (required for domain-wide delegation)
+gdaudit scan --scope shared-drives --impersonate admin@yourdomain.com
+```
+
+## Configuration
+
+Configuration file is located at `~/.gdaudit/config.yaml`. Example:
+
+```yaml
+# Internal domains (not considered external)
+internal_domains:
+  - yourdomain.com
+  - trusted-partner.com
+
+# Trusted domains (lower risk)
+trusted_domains:
+  - partner.com
+
+# Drive filtering
+included_drives: []  # Empty = all drives, or specify drive names/IDs
+excluded_drives:
+  - "Archive Drive"
+  - "0AA4VQp02CjVdUk9PVA"
+
+# Default settings
+default_scope: shared-drives
+dry_run: true  # Safety default
+credentials_path: ~/.gdaudit/credentials.json
+impersonate_user: admin@yourdomain.com
+```
 
 ## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### Scan Command
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Scan Google Drive for security issues.
+
+```bash
+gdaudit scan [flags]
+```
+
+#### Scopes
+
+- `active` - Scan all active users
+- `suspended` - Scan all suspended users
+- `shared-drives` - Scan all shared drives
+- `user:<email>` - Scan specific user (e.g., `user:john@example.com`)
+
+#### Flags
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--scope` | Scan scope | `--scope shared-drives` |
+| `--shared-with` | Filter by email pattern (supports wildcards) | `--shared-with "*@competitor.com"` |
+| `--public` | Only show files with public "Anyone with Link" permissions | `--public` |
+| `--interactive`, `-i` | Launch interactive TUI dashboard | `--interactive` |
+| `--format` | Output format: `table`, `json`, or `csv` | `--format json` |
+| `--output` | Write results to file (auto-detects format from extension) | `--output results.json` |
+| `--list-drives` | List all drives/targets without scanning | `--list-drives` |
+| `--credentials` | Path to service account JSON file | `--credentials ./creds.json` |
+| `--impersonate` | User email for domain-wide delegation | `--impersonate admin@domain.com` |
+| `--debug` | Enable debug logging | `--debug` |
+| `--verbose`, `-v` | Enable verbose output | `--verbose` |
+
+#### Examples
+
+```bash
+# Basic scan of shared drives
+gdaudit scan --scope shared-drives
+
+# Scan and output to JSON file
+gdaudit scan --scope shared-drives --output results.json
+
+# Find files shared with specific domain
+gdaudit scan --scope shared-drives --shared-with "*@competitor.com"
+
+# Find files shared with users matching pattern
+gdaudit scan --scope shared-drives --shared-with "admin*@example.com"
+
+# Find only public files
+gdaudit scan --scope shared-drives --public
+
+# Interactive TUI mode
+gdaudit scan --scope shared-drives --interactive
+
+# List drives without scanning
+gdaudit scan --scope shared-drives --list-drives
+
+# Scan specific user
+gdaudit scan --scope user:john@example.com
+
+# Scan with custom credentials
+gdaudit scan --scope shared-drives --credentials ./my-creds.json --impersonate admin@domain.com
+```
+
+### Revoke Command
+
+Revoke external permissions from Google Drive files.
+
+```bash
+# Revoke permissions from a specific file
+gdaudit revoke file <file_id> [flags]
+
+# Revoke a user's access from all files
+gdaudit revoke user <email> [flags]
+```
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview changes without applying them (default: true) |
+| `--confirm` | Actually apply changes (required for real revocations) |
+
+#### Examples
+
+```bash
+# Preview revoking user from a file
+gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz --dry-run
+
+# Actually revoke user from a file
+gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz --confirm
+
+# Preview revoking user from all files
+gdaudit revoke user external@competitor.com --dry-run
+
+# Actually revoke user from all files
+gdaudit revoke user external@competitor.com --confirm
+```
+
+### Report Command
+
+Generate reports from previous scan results.
+
+```bash
+gdaudit report [flags]
+```
+
+#### Flags
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--input` | Input JSON file from previous scan | `--input scan-results.json` |
+| `--format` | Output format: `excel`, `csv`, `table` | `--format excel` |
+| `--output` | Output file path | `--output report.xlsx` |
+| `--strategy` | Excel grouping strategy: `by-file`, `by-user`, `by-risk` | `--strategy by-risk` |
+
+#### Examples
+
+```bash
+# Generate Excel report
+gdaudit report --input results.json --format excel --output report.xlsx
+
+# Generate CSV report
+gdaudit report --input results.json --format csv --output report.csv
+
+# Generate Excel report grouped by risk level
+gdaudit report --input results.json --format excel --strategy by-risk --output report.xlsx
+```
+
+### Init Command
+
+Interactive wizard to set up configuration and credentials.
+
+```bash
+gdaudit init
+```
+
+This command guides you through:
+- Creating configuration directory
+- Setting up credentials file path
+- Configuring default scope
+- Setting up internal/trusted domains
+
+## Output Formats
+
+### Table Format (Default)
+
+Human-readable table output with color-coded risk levels:
+- 🔴 **Critical** - Public files or high-risk external shares
+- 🟠 **High** - External shares with write access
+- 🟡 **Medium** - External shares with comment access
+- 🟢 **Low** - External shares with read-only access
+
+### JSON Format
+
+Structured JSON output suitable for automation and integration:
+
+```json
+{
+  "metadata": {
+    "scope": "shared-drives",
+    "total_files_scanned": 1234,
+    "issues_found": 56,
+    "scan_duration": "5m23s"
+  },
+  "issues": [
+    {
+      "file_id": "...",
+      "file_name": "...",
+      "owner_email": "...",
+      "permissions": [...]
+    }
+  ]
+}
+```
+
+### CSV Format
+
+Comma-separated values for spreadsheet import.
+
+### Excel Format
+
+Rich Excel reports with:
+- Color-coded risk levels
+- Multiple sheets (by file, by user, by risk)
+- Formatted cells and headers
+
+## Pattern Matching
+
+The `--shared-with` flag supports wildcard patterns:
+
+- `*@example.com` - Matches all emails from example.com domain
+- `user*@example.com` - Matches emails starting with "user" from example.com
+- `*user@example.com` - Matches emails ending with "user" from example.com
+- `*user*@example.com` - Matches emails containing "user" anywhere
+- `exact@example.com` - Exact email match
+
+## Interactive TUI
+
+Launch the interactive terminal user interface:
+
+```bash
+gdaudit scan --scope shared-drives --interactive
+```
+
+Features:
+- Real-time progress bar
+- Live file scanning statistics
+- Navigable list of security issues
+- Detailed file permission views
+- Color-coded risk levels
+- Keyboard navigation (arrow keys, Enter, Esc)
+
+## Risk Levels
+
+Files are categorized by risk level based on permission type and access level:
+
+- **Critical**: Public "Anyone with Link" permissions
+- **High**: External users with "Writer" or "Owner" role
+- **Medium**: External users with "Commenter" role
+- **Low**: External users with "Reader" role
+
+## Troubleshooting
+
+### Authentication Errors
+
+**Error**: `unauthorized_client` or `401`
+
+**Solution**:
+1. Verify domain-wide delegation is configured in Google Admin Console
+2. Ensure service account has correct scopes authorized
+3. Check that `--impersonate` flag is set with a valid admin user
+4. Wait a few minutes after configuring delegation for changes to propagate
+
+### No Files Found
+
+**Possible causes**:
+1. Scope doesn't match any targets (check with `--list-drives`)
+2. All files are filtered out by internal/trusted domain settings
+3. Drive access restrictions (check service account permissions)
+
+### Permission Denied Errors
+
+**Error**: `403: The attempted action requires shared drive membership`
+
+**Solution**: Ensure the service account has access to the shared drives you're trying to scan. This may require adding the service account as a member of the shared drive.
+
+## Configuration Reference
+
+### Configuration File Location
+
+Default: `~/.gdaudit/config.yaml`
+
+Override with: `--config /path/to/config.yaml`
+
+### Configuration Options
+
+| Option | Type | Description | Default |
+|--------|------|-------------|---------|
+| `internal_domains` | `[]string` | Domains not considered external | `[]` |
+| `trusted_domains` | `[]string` | Domains with lower risk scoring | `[]` |
+| `included_drives` | `[]string` | Whitelist of drives to scan (empty = all) | `[]` |
+| `excluded_drives` | `[]string` | Blacklist of drives to skip | `[]` |
+| `default_scope` | `string` | Default scan scope | `active` |
+| `dry_run` | `bool` | Safety default for revoke operations | `true` |
+| `credentials_path` | `string` | Path to service account JSON | `~/.gdaudit/credentials.json` |
+| `impersonate_user` | `string` | Default user for impersonation | `""` |
+
+## Examples
+
+### Example 1: Find All External Shares
+
+```bash
+gdaudit scan --scope shared-drives --output external-shares.json
+```
+
+### Example 2: Find Files Shared with Competitor Domain
+
+```bash
+gdaudit scan --scope shared-drives \
+  --shared-with "*@competitor.com" \
+  --output competitor-shares.json
+```
+
+### Example 3: Generate Excel Report
+
+```bash
+# Scan and save results
+gdaudit scan --scope shared-drives --output scan-results.json
+
+# Generate Excel report
+gdaudit report --input scan-results.json \
+  --format excel \
+  --strategy by-risk \
+  --output security-report.xlsx
+```
+
+### Example 4: Interactive Audit
+
+```bash
+gdaudit scan --scope shared-drives --interactive
+```
+
+### Example 5: Revoke External User Access
+
+```bash
+# First, scan to find files
+gdaudit scan --scope shared-drives --shared-with "external@competitor.com" --output results.json
+
+# Preview revocation
+gdaudit revoke user external@competitor.com --dry-run
+
+# Actually revoke (requires --confirm)
+gdaudit revoke user external@competitor.com --confirm
+```
 
 ## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Contributions are welcome! Please:
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a merge request
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+[Add your license here]
+
+## Support
+
+For issues, questions, or contributions:
+- Issue Tracker: [GitLab Issues](https://gitlab.da.local/admins/gdrive-audit/-/issues)
+- Repository: [GitLab Repository](https://gitlab.da.local/admins/gdrive-audit)
+
+## Version
+
+Current version: **0.1.0**
