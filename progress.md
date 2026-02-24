@@ -182,6 +182,279 @@ gdaudit scan --scope shared-drives --shared-with "admin*@example.com"
 
 ---
 
+## Date: 2026-02-24
+
+---
+
+## 7. Fixed Race Condition in Scanner Filters
+
+**Files**:
+- `internal/audit/scanner.go`
+- `cmd/gdaudit/scan.go`
+- `cmd/gdaudit/tui.go`
+- `internal/audit/scanner_test.go`
+
+**Problem**: `Scanner.filterSharedWith` and `Scanner.filterPublicOnly` were mutable struct fields set via setter methods, but read concurrently by worker goroutines in `processFile()` without synchronization — a data race.
+
+**Changes**:
+- Added `ScanOptions` struct with `FilterSharedWith` and `FilterPublicOnly` fields
+- Changed `Scan()` signature to accept `ScanOptions` as a value parameter
+- Threaded `opts` through `scanTarget()` → `processFiles()` → `processFile()`
+- Removed mutable fields and setter methods (`SetFilterSharedWith`, `SetFilterPublicOnly`)
+- Made `matchesSharedWithPattern()` a standalone function (no longer a method)
+- Updated `scan.go` and `tui.go` to build `ScanOptions` before calling `Scan()`
+- Updated all tests to pass `ScanOptions{}` to `processFile()`
+
+**Impact**: Eliminates race condition. Filter values are immutable during scan execution (passed by value to each goroutine).
+
+**Testing**: `go build ./...` ✅, `go test ./...` ✅, `go vet ./...` ✅
+
+---
+
+## 8. Log Config Load Failures
+
+**File**: `cmd/gdaudit/root.go`
+
+**Problem**: `initConfig()` silently ignored config load errors and fell back to defaults. Users had no way to know their config file was malformed or inaccessible.
+
+**Changes**:
+- Added `fmt.Fprintf(os.Stderr, ...)` warning before falling back to defaults
+- Uses stderr directly since logger isn't initialized yet at this point (cobra.OnInitialize runs initConfig before initLogger)
+
+**Impact**: Users now see a warning when their config fails to load, instead of silently getting defaults.
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅
+
+---
+
+## 9. Extracted Duplicate Credentials Resolution to Helper
+
+**Files**:
+- Created `cmd/gdaudit/helpers.go`
+- Modified `cmd/gdaudit/scan.go`
+- Modified `cmd/gdaudit/revoke.go` (2 occurrences)
+- Modified `cmd/gdaudit/tui.go`
+
+**Problem**: Same 12-line credentials resolution logic (resolve path → check file existence → return error) was duplicated 4 times across scan.go, revoke.go (twice), and tui.go.
+
+**Changes**:
+- Created `resolveCredentialsPath(cfg, flagOverride)` helper in `helpers.go`
+- Replaced all 4 duplicated blocks with single helper call
+
+**Impact**: Single source of truth for credentials resolution. Easier to modify behavior (e.g., add logging, change fallback) in one place.
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+
+---
+
+## 10. Added Tests for revoke/ Package
+
+**Files created**:
+- `internal/revoke/file_test.go` (9 tests)
+- `internal/revoke/user_test.go` (4 tests)
+
+**Problem**: `internal/revoke/file.go` and `user.go` had zero test coverage. These are the most critical functions — they DELETE permissions.
+
+**Test cases for FileRevoker**:
+- External user gets revoked
+- Internal user NOT revoked
+- Owner permission NOT revoked
+- Dry-run mode — no actual deletions
+- Public "anyone" permission gets revoked
+- Specific user from file gets revoked
+- Owner cannot be revoked (returns error)
+- User not found — no error, no deletion
+- RevokeUserFromFile dry-run
+
+**Test cases for UserRevoker**:
+- User revoked from multiple files
+- Dry-run mode
+- ListPermissions error — continues processing other files
+- No matching files — no API calls made
+
+**Coverage**: 89.0% of statements in `internal/revoke/`
+
+**Testing**: `go test ./...` ✅ (13/13 new tests pass)
+
+---
+
+## 11. Passed Context to MetadataResolver Methods
+
+**Files modified**:
+- `internal/drive/metadata.go`
+- `internal/audit/scanner.go`
+
+**Problem**: `GetFolderInfo()` and `buildPathRecursive()` used `context.Background()` internally, ignoring the caller's context. This meant cancellation signals didn't propagate — if a scan was cancelled, metadata resolution continued making API calls.
+
+**Changes**:
+- Added `ctx context.Context` parameter to: `GetDriveName()`, `GetFolderPath()`, `GetFolderName()`, `buildPathRecursive()`, `GetFolderInfo()`
+- Removed `context.Background()` calls (lines 160, 199)
+- Updated callers in `scanner.go` to pass `ctx` through
+- Removed outdated TODO comment about needing context parameter
+
+**Impact**: Cancellation and timeouts now propagate correctly through the entire scan → metadata resolution chain.
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+
+---
+
+## 12. Integrated Rate Limiter into Drive Client
+
+**File modified**: `internal/drive/client.go`
+
+**Problem**: Rate limiter (`pkg/gdrive/ratelimit.go`) was fully implemented and tested but never used. Large scans could hit Google Drive API 429 errors (quota: 1000 requests per 100 seconds).
+
+**Changes**:
+- Added `rateLimiter *gdrive.RateLimiter` field to `client` struct
+- Instantiated rate limiter in `NewClient()` with sensible defaults (5 retries, 1s base delay, 30s max delay)
+- Added `waitForQuota()` helper method
+- Added `c.waitForQuota(ctx)` call at the start of all 6 API methods: `ListFiles`, `GetFile`, `ListPermissions`, `DeletePermission`, `ListDrives`, `GetDrive`
+- Rate limiter respects context cancellation
+
+**Impact**: API calls are now automatically throttled to stay within Google Drive API quotas. Prevents 429 errors during large scans.
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+
+---
+
+## 13. Verified Binaries Not Tracked in Git
+
+**Check**: `git ls-files -- gdaudit gdrive-audit results.json` returned empty — binaries are not tracked.
+
+**Status**: `.gitignore` already excludes `gdaudit`, `gdrive-audit`, and `*.json`. No action needed.
+
+---
+
+## Final Verification
+
+- `go build ./...` ✅
+- `go vet ./...` ✅
+- `go test ./...` ✅ (all packages pass)
+- `go test -race ./...` ✅ (no race conditions detected)
+- `go test -cover ./internal/revoke/...` → **89.0% coverage**
+
+---
+
+## 14. Improved Scan CLI Output
+
+**Files modified**:
+- `internal/audit/scanner.go`
+- `internal/report/progress.go`
+- `cmd/gdaudit/scan.go`
+
+**Problems fixed**:
+1. **Bug**: "Scanning target 34/69" showed wrong total — `len(targets)` instead of `len(filteredTargets)` after exclusions
+2. **Interleaving**: INFO log lines and progress bar mixed on stderr (both writing unsynchronized)
+3. **Noise**: "Processing page 1...", "Scanning target X/Y", "Completed target X/Y" duplicated info from progress bar
+4. **Duplicate**: "Scan complete" printed twice — once by logger, once by progress reporter
+5. **Progress lacked context**: Just "Scanning... 200 files" — didn't show which drive was being scanned
+
+**Changes**:
+
+### scanner.go:
+- Fixed target count bug: `len(targets)` → `len(filteredTargets)` on line 165
+- Downgraded per-target and per-page logs from `Info` to `Debug` (lines 165, 185, 241)
+- Downgraded final "Scan complete" log to `Debug` (line 196)
+- Consolidated pre-scan messages: "Found N targets (X excluded, Y to scan)"
+- Added `targetProgressFunc` callback field and `SetTargetProgressFunc()` setter
+- Called `targetProgressFunc(idx+1, len(filteredTargets), targetName)` before each target
+
+### progress.go:
+- Added `targetIdx`, `targetTotal`, `targetName`, `startTime` fields
+- Added `SetTarget(idx, total, name)` method — called before each target
+- Changed `Update()` to always render (removed 50-file throttle since `\r` rewrite is cheap)
+- New format: `Scanning [12/66] Marketing Drive — 847 files, 23 issues`
+- Added duration to `Finish()`: `Scan complete: 2340 files scanned, 87 issues found in 5m23s`
+- Added `formatDuration()` helper (ms / s / Xm YYs)
+- Truncates long drive names (>40 chars) with "..."
+
+### scan.go:
+- Wired `scanner.SetTargetProgressFunc(progressReporter.SetTarget)`
+- Removed redundant `appLogger.Info("Starting scan with scope: %s")` (scanner already logs scope info)
+
+**Expected output (clean)**:
+```
+[21:24:01] INFO: Using credentials file: credentials.json
+[21:24:01] INFO: Found 69 targets (3 excluded, 66 to scan)
+
+Scanning [12/66] Marketing Drive — 847 files, 23 issues
+
+Scan complete: 2340 files scanned, 87 issues found in 5m23s
+```
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+
+---
+
+## 15. Fixed `--list-drives` Counts & Eliminated Drive Filtering Duplication
+
+**Files modified**:
+- `internal/audit/scope.go`
+- `internal/audit/scanner.go`
+- `cmd/gdaudit/scan.go`
+
+**Problems fixed**:
+1. **Wrong count**: `--list-drives` showed "66 active, 3 excluded" when only 1 drive was in `included_drives` — `included_drives` filtering was not reflected in header/footer summary
+2. **Duplicate logic**: Include/exclude drive filtering duplicated in 3 places: scanner methods, `isExcluded()` function, and inline whitelist check in `listDrives()` loop
+
+**Changes**:
+
+### scope.go:
+- Added exported `ShouldIncludeDrive(target, includedDrives)` and `ShouldExcludeDrive(target, excludedDrives)` standalone functions
+- Single source of truth for drive filtering logic
+
+### scanner.go:
+- Replaced `s.shouldIncludeDrive(target)` → `ShouldIncludeDrive(target, s.config.IncludedDrives)`
+- Replaced `s.shouldExcludeDrive(target)` → `ShouldExcludeDrive(target, s.config.ExcludedDrives)`
+- Deleted private methods `shouldIncludeDrive()` and `shouldExcludeDrive()`
+
+### scan.go:
+- Deleted `isExcluded()` standalone function
+- Replaced inline whitelist check in `listDrives()` with `audit.ShouldIncludeDrive()`
+- Pre-loop now counts all 3 categories: `excludedCount`, `outOfScopeCount`, `activeCount`
+- Per-row status uses shared functions: `audit.ShouldExcludeDrive()` / `audit.ShouldIncludeDrive()`
+- Simplified header to single line: `Found 69 shared drives for scope 'shared-drives':`
+- Footer now shows all categories: `Total: 69 shared drives (1 active, 3 excluded, 65 not in scope)`
+- Downgraded "Resolving targets" log from Info to Debug
+- Downgraded "Found N shared drives" in scope.go from Info to Debug
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+
+---
+
+## 16. Added Animated Spinner to CLI Progress
+
+**Files modified**:
+- `internal/report/progress.go` (rewritten)
+- `cmd/gdaudit/scan.go` (1 line added)
+
+**New dependency**: `github.com/charmbracelet/bubbles` (spinner component)
+
+**Problem**: Progress line was static between data updates — no visual feedback while waiting for API responses.
+
+**Changes**:
+
+### progress.go (rewritten):
+- Replaced `\r`-based manual rendering with a Bubble Tea program
+- Uses `bubbles/spinner.Dot` (braille dots: `⣾⣽⣻⢿⡿⣟⣯⣷`) for smooth animation
+- New internal `progressModel` Bubble Tea model handles `spinner.TickMsg`, `progressMsg`, `targetMsg`, `doneMsg`
+- `ProgressReporter` exported API preserved: `NewProgressReporter()`, `SetTarget()`, `Update()`, `Finish()`
+- Added `Start()` method that launches `tea.Program` in a background goroutine
+- `Update()` / `SetTarget()` → `program.Send()` (thread-safe)
+- `Finish()` → sends `doneMsg`, waits for program exit, prints final summary with duration
+
+### scan.go:
+- Added `progressReporter.Start()` call before scan begins
+
+**Output**:
+```
+⣻ Scanning [1/1] Secure Client Projects — 200 files, 27 issues
+```
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅, `go test -race ./...` ✅
+
+---
+
 ## Next Steps / Future Improvements
 
 1. Consider adding regex support for more advanced pattern matching

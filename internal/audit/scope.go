@@ -32,6 +32,41 @@ type Target struct {
 	Owner string // Owner/creator of the drive or user
 }
 
+// ShouldIncludeDrive checks if a drive target is in the inclusion list.
+// Returns true if includedDrives is empty (all included by default),
+// target is not a drive type, or target matches by ID or Name.
+func ShouldIncludeDrive(target Target, includedDrives []string) bool {
+	if len(includedDrives) == 0 {
+		return true
+	}
+	if target.Type != "drive" {
+		return true
+	}
+	for _, included := range includedDrives {
+		if target.ID == included || target.Name == included {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldExcludeDrive checks if a drive target is in the exclusion list.
+// Returns false if excludedDrives is empty or target is not a drive type.
+func ShouldExcludeDrive(target Target, excludedDrives []string) bool {
+	if len(excludedDrives) == 0 {
+		return false
+	}
+	if target.Type != "drive" {
+		return false
+	}
+	for _, excluded := range excludedDrives {
+		if target.ID == excluded || target.Name == excluded {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveScope resolves a scope string to a list of targets
 func ResolveScope(scope string, dirClient gdrive.DirectoryClient, driveClient gdrive.DriveClient, log logger.Logger) ([]Target, error) {
 	scopeLower := strings.ToLower(strings.TrimSpace(scope))
@@ -127,7 +162,7 @@ func resolveSharedDrives(ctx context.Context, driveClient gdrive.DriveClient, lo
 		}
 	}
 
-	log.Info("Found %d shared drives", len(drives))
+	log.Debug("Found %d shared drives (before filtering)", len(drives))
 
 	targets := make([]Target, 0, len(drives))
 	for _, drive := range drives {

@@ -83,7 +83,7 @@ func TestScanner_ProcessFile(t *testing.T) {
 		},
 	}
 
-	issue := scanner.processFile(context.Background(), file)
+	issue := scanner.processFile(context.Background(), file, ScanOptions{})
 	if issue == nil {
 		t.Error("Expected issue for external permission")
 	}
@@ -126,7 +126,7 @@ func TestScanner_ProcessFile_InternalOnly(t *testing.T) {
 		},
 	}
 
-	issue := scanner.processFile(context.Background(), file)
+	issue := scanner.processFile(context.Background(), file, ScanOptions{})
 	if issue != nil {
 		t.Error("Expected nil for internal-only permissions")
 	}
@@ -155,7 +155,7 @@ func TestScanner_ProcessFile_Public(t *testing.T) {
 		Name: "test.pdf",
 	}
 
-	issue := scanner.processFile(context.Background(), file)
+	issue := scanner.processFile(context.Background(), file, ScanOptions{})
 	if issue == nil {
 		t.Error("Expected issue for public permission")
 	}

@@ -16,18 +16,23 @@ import (
 	"gdrive-audit/pkg/models"
 )
 
+// ScanOptions holds immutable options for a single scan invocation.
+// Passed by value to avoid race conditions with concurrent worker goroutines.
+type ScanOptions struct {
+	FilterSharedWith string // Only show files shared with this email/pattern
+	FilterPublicOnly bool   // Only show files with public "anyone" links
+}
+
 // Scanner performs security audits on Google Drive files
 type Scanner struct {
-	driveClient  gdrive.DriveClient
-	dirClient    gdrive.DirectoryClient
-	config       *config.Config
-	logger       logger.Logger
-	workerCount  int
-	progressFunc func(filesScanned, issuesFound int)
-	resolver     *drive.MetadataResolver
-	// Filters
-	filterSharedWith string // Filter: only show files shared with this email
-	filterPublicOnly bool   // Filter: only show files with public "anyone" links
+	driveClient        gdrive.DriveClient
+	dirClient          gdrive.DirectoryClient
+	config             *config.Config
+	logger             logger.Logger
+	workerCount        int
+	progressFunc       func(filesScanned, issuesFound int)
+	targetProgressFunc func(targetIdx, targetTotal int, targetName string)
+	resolver           *drive.MetadataResolver
 }
 
 // NewScanner creates a new scanner instance
@@ -62,41 +67,32 @@ func (s *Scanner) SetProgressFunc(fn func(filesScanned, issuesFound int)) {
 	s.progressFunc = fn
 }
 
-// SetFilterSharedWith sets a filter to only show files shared with a specific email or pattern
+// SetTargetProgressFunc sets a callback function for target-level progress updates
+func (s *Scanner) SetTargetProgressFunc(fn func(targetIdx, targetTotal int, targetName string)) {
+	s.targetProgressFunc = fn
+}
+
+// matchesSharedWithPattern checks if an email matches the shared-with filter pattern.
 // Supports wildcard patterns:
 //   - *@example.com matches all emails from example.com domain
 //   - user*@example.com matches emails starting with "user" from example.com
 //   - *user@example.com matches emails ending with "user" from example.com
 //   - exact@example.com matches exact email address
-func (s *Scanner) SetFilterSharedWith(email string) {
-	s.filterSharedWith = strings.ToLower(strings.TrimSpace(email))
-}
-
-// matchesSharedWithPattern checks if an email matches the shared-with filter pattern
-func (s *Scanner) matchesSharedWithPattern(email string) bool {
-	pattern := s.filterSharedWith
-	
+func matchesSharedWithPattern(email, pattern string) bool {
 	// Exact match
 	if email == pattern {
 		return true
 	}
-	
+
 	// Check if pattern contains wildcards
 	if strings.Contains(pattern, "*") {
-		// Convert wildcard pattern to glob pattern
-		// Replace * with * for glob matching
 		matched, err := filepath.Match(pattern, email)
 		if err == nil && matched {
 			return true
 		}
 	}
-	
-	return false
-}
 
-// SetFilterPublicOnly sets a filter to only show files with public "anyone" links
-func (s *Scanner) SetFilterPublicOnly(publicOnly bool) {
-	s.filterPublicOnly = publicOnly
+	return false
 }
 
 // IsPublicPermission checks if a permission is public ("anyone with link")
@@ -105,7 +101,9 @@ func IsPublicPermission(perm gdrive.Permission) bool {
 }
 
 // Scan performs a security scan based on the specified scope
-func (s *Scanner) Scan(ctx context.Context, scope string) (*models.ScanResult, error) {
+func (s *Scanner) Scan(ctx context.Context, scope string, opts ScanOptions) (*models.ScanResult, error) {
+	// Normalize filter values once, before any concurrent access
+	opts.FilterSharedWith = strings.ToLower(strings.TrimSpace(opts.FilterSharedWith))
 	startTime := time.Now()
 	result := models.NewScanResult(scope)
 
@@ -115,11 +113,17 @@ func (s *Scanner) Scan(ctx context.Context, scope string) (*models.ScanResult, e
 		return nil, fmt.Errorf("failed to resolve scope: %w", err)
 	}
 
-	// Filter excluded drives
+	// Filter targets by included_drives and excluded_drives
 	filteredTargets := make([]Target, 0, len(targets))
 	excludedCount := 0
+	outOfScopeCount := 0
 	for _, target := range targets {
-		if target.Type == "drive" && s.shouldExcludeDrive(target) {
+		if !ShouldIncludeDrive(target, s.config.IncludedDrives) {
+			s.logger.Debug("Skipping drive (not in included_drives): %s (ID: %s)", target.Name, target.ID)
+			outOfScopeCount++
+			continue
+		}
+		if ShouldExcludeDrive(target, s.config.ExcludedDrives) {
 			s.logger.Debug("Excluding drive: %s (ID: %s)", target.Name, target.ID)
 			excludedCount++
 			continue
@@ -127,13 +131,11 @@ func (s *Scanner) Scan(ctx context.Context, scope string) (*models.ScanResult, e
 		filteredTargets = append(filteredTargets, target)
 	}
 
-	if excludedCount > 0 {
-		s.logger.Info("Excluded %d drive(s) based on configuration", excludedCount)
-	}
-
-	s.logger.Info("Starting scan with scope '%s', found %d targets", scope, len(filteredTargets))
-	if len(filteredTargets) > 0 {
-		s.logger.Info("Scanning %d targets... This may take a while", len(filteredTargets))
+	skippedTotal := excludedCount + outOfScopeCount
+	if skippedTotal > 0 {
+		s.logger.Info("Found %d shared drives (%d excluded, %d to scan)", len(targets), skippedTotal, len(filteredTargets))
+	} else {
+		s.logger.Info("Found %d shared drives to scan", len(filteredTargets))
 	}
 
 	// Pre-populate drive name cache with known drive names from targets
@@ -154,23 +156,18 @@ func (s *Scanner) Scan(ctx context.Context, scope string) (*models.ScanResult, e
 			targetName = target.ID
 		}
 
-		// Check if drive should be included/excluded
-		if !s.shouldIncludeDrive(target) {
-			s.logger.Debug("Skipping drive (not in included_drives): %s", targetName)
-			continue
-		}
-		if s.shouldExcludeDrive(target) {
-			s.logger.Debug("Skipping drive (in excluded_drives): %s", targetName)
-			continue
-		}
+		s.logger.Debug("Scanning target %d/%d: %s", idx+1, len(filteredTargets), targetName)
 
-		s.logger.Info("Scanning target %d/%d: %s", idx+1, len(targets), targetName)
+		// Notify target progress callback (for progress reporter)
+		if s.targetProgressFunc != nil {
+			s.targetProgressFunc(idx+1, len(filteredTargets), targetName)
+		}
 
 		// Track files and issues before scanning this target
 		filesBeforeScan := totalFileCount
 		issuesBeforeScan := len(result.Issues)
 
-		if err := s.scanTarget(ctx, target, result, &totalFileCount); err != nil {
+		if err := s.scanTarget(ctx, target, result, &totalFileCount, opts); err != nil {
 			s.logger.Warn("Failed to scan target %s: %v", targetName, err)
 			// Continue with other targets
 		}
@@ -179,7 +176,7 @@ func (s *Scanner) Scan(ctx context.Context, scope string) (*models.ScanResult, e
 		filesThisTarget := totalFileCount - filesBeforeScan
 		issuesThisTarget := len(result.Issues) - issuesBeforeScan
 
-		s.logger.Info("Completed target %d/%d (Files: %d, Issues: %d)",
+		s.logger.Debug("Completed target %d/%d (Files: %d, Issues: %d)",
 			idx+1, len(filteredTargets), filesThisTarget, issuesThisTarget)
 	}
 
@@ -190,12 +187,12 @@ func (s *Scanner) Scan(ctx context.Context, scope string) (*models.ScanResult, e
 	// Set duration
 	result.SetDuration(time.Since(startTime))
 
-	s.logger.Info("Scan complete: %d files scanned, %d issues found", result.Metadata.TotalFilesScanned, result.Metadata.IssuesFound)
+	s.logger.Debug("Scan complete: %d files scanned, %d issues found", result.Metadata.TotalFilesScanned, result.Metadata.IssuesFound)
 	return result, nil
 }
 
 // scanTarget scans files for a specific target (user or drive)
-func (s *Scanner) scanTarget(ctx context.Context, target Target, result *models.ScanResult, totalFileCount *int) error {
+func (s *Scanner) scanTarget(ctx context.Context, target Target, result *models.ScanResult, totalFileCount *int, opts ScanOptions) error {
 	// Build query and driveID based on target type
 	query := "trashed = false"
 	var driveID string
@@ -235,13 +232,13 @@ func (s *Scanner) scanTarget(ctx context.Context, target Target, result *models.
 
 		s.logger.Debug("Page %d: Processing %d files", pageCount, len(fileList.Files))
 
-		// Log progress for every page
+		// Log progress for every page (Debug only — progress reporter handles user-facing output)
 		if pageCount%10 == 0 || pageCount == 1 {
-			s.logger.Info("Processing page %d... (%d files so far)", pageCount, *totalFileCount)
+			s.logger.Debug("Processing page %d... (%d files so far)", pageCount, *totalFileCount)
 		}
 
 		// Process files concurrently
-		issues := s.processFiles(ctx, fileList.Files)
+		issues := s.processFiles(ctx, fileList.Files, opts)
 
 		// Add issues to result
 		for _, issue := range issues {
@@ -266,7 +263,7 @@ func (s *Scanner) scanTarget(ctx context.Context, target Target, result *models.
 }
 
 // processFiles processes files concurrently using a worker pool
-func (s *Scanner) processFiles(ctx context.Context, files []gdrive.File) []models.FileIssue {
+func (s *Scanner) processFiles(ctx context.Context, files []gdrive.File, opts ScanOptions) []models.FileIssue {
 	type workItem struct {
 		file gdrive.File
 	}
@@ -285,7 +282,7 @@ func (s *Scanner) processFiles(ctx context.Context, files []gdrive.File) []model
 				case <-ctx.Done():
 					return
 				default:
-					if issue := s.processFile(ctx, item.file); issue != nil {
+					if issue := s.processFile(ctx, item.file, opts); issue != nil {
 						resultChan <- *issue
 					}
 				}
@@ -320,7 +317,7 @@ func (s *Scanner) processFiles(ctx context.Context, files []gdrive.File) []model
 }
 
 // processFile processes a single file and returns an issue if security problems are found
-func (s *Scanner) processFile(ctx context.Context, file gdrive.File) *models.FileIssue {
+func (s *Scanner) processFile(ctx context.Context, file gdrive.File, opts ScanOptions) *models.FileIssue {
 	// Get permissions with timeout protection
 	s.logger.Debug("Listing permissions for file: %s (%s)", file.ID, file.Name)
 	permissions, err := s.driveClient.ListPermissions(ctx, file.ID)
@@ -382,16 +379,16 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File) *models.Fil
 	}
 
 	// Apply --public filter: only show files with public "anyone" links
-	if s.filterPublicOnly && !hasPublic {
+	if opts.FilterPublicOnly && !hasPublic {
 		return nil
 	}
 
 	// Apply --shared-with filter: only show files shared with specific email or pattern
-	if s.filterSharedWith != "" {
+	if opts.FilterSharedWith != "" {
 		matchesFilter := false
 		for _, perm := range permissions {
 			emailLower := strings.ToLower(perm.EmailAddress)
-			if s.matchesSharedWithPattern(emailLower) {
+			if matchesSharedWithPattern(emailLower, opts.FilterSharedWith) {
 				matchesFilter = true
 				break
 			}
@@ -418,11 +415,11 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File) *models.Fil
 
 	// Resolve drive name from DriveID
 	if file.DriveID != "" {
-		issue.DriveName = s.resolver.GetDriveName(&file)
+		issue.DriveName = s.resolver.GetDriveName(ctx, &file)
 	}
 
 	// Resolve folder path
-	issue.FolderPath = s.resolver.GetFolderPath(&file)
+	issue.FolderPath = s.resolver.GetFolderPath(ctx, &file)
 
 	// Apply filters
 	if filter.ShouldExcludeInternalOnly(issue, s.config.InternalDomains) {
@@ -435,48 +432,3 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File) *models.Fil
 	return &issue
 }
 
-// shouldIncludeDrive checks if a drive should be included based on configuration
-// If included_drives is empty, all drives are included by default
-// If included_drives is specified, only those drives are included
-func (s *Scanner) shouldIncludeDrive(target Target) bool {
-	// If no whitelist specified, include all drives
-	if len(s.config.IncludedDrives) == 0 {
-		return true
-	}
-
-	// Only scan if target type is "drive" (skip for user scopes)
-	if target.Type != "drive" {
-		return true
-	}
-
-	// Check if drive is in the whitelist
-	for _, included := range s.config.IncludedDrives {
-		// Match by ID or name
-		if target.ID == included || target.Name == included {
-			return true
-		}
-	}
-
-	return false
-}
-
-// shouldExcludeDrive checks if a drive should be excluded based on configuration
-func (s *Scanner) shouldExcludeDrive(target Target) bool {
-	if len(s.config.ExcludedDrives) == 0 {
-		return false
-	}
-
-	// Only apply to drive targets
-	if target.Type != "drive" {
-		return false
-	}
-
-	for _, excluded := range s.config.ExcludedDrives {
-		// Match by ID or name
-		if target.ID == excluded || target.Name == excluded {
-			return true
-		}
-	}
-
-	return false
-}

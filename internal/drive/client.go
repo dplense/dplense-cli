@@ -3,6 +3,7 @@ package drive
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gdrive-audit/internal/logger"
 	"gdrive-audit/pkg/gdrive"
@@ -12,20 +13,30 @@ import (
 
 // client implements the DriveClient interface
 type client struct {
-	service *driveapi.Service
-	logger  logger.Logger
+	service     *driveapi.Service
+	logger      logger.Logger
+	rateLimiter *gdrive.RateLimiter
 }
 
-// NewClient creates a new Drive client
+// NewClient creates a new Drive client with built-in rate limiting
 func NewClient(service *driveapi.Service, log logger.Logger) gdrive.DriveClient {
 	return &client{
-		service: service,
-		logger:  log,
+		service:     service,
+		logger:      log,
+		rateLimiter: gdrive.NewRateLimiter(5, 1*time.Second, 30*time.Second),
 	}
+}
+
+// waitForQuota waits if the API rate limit quota is exhausted
+func (c *client) waitForQuota(ctx context.Context) error {
+	return c.rateLimiter.WaitIfNeeded(ctx)
 }
 
 // ListFiles lists files matching the query with pagination
 func (c *client) ListFiles(ctx context.Context, query string, pageToken string, driveID string) (*gdrive.FileList, error) {
+	if err := c.waitForQuota(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
 	c.logger.Debug("Listing files with query: %s, pageToken: %s, driveID: %s", query, pageToken, driveID)
 
 	call := c.service.Files.List().
@@ -81,6 +92,9 @@ func (c *client) ListFiles(ctx context.Context, query string, pageToken string, 
 
 // GetFile retrieves a file by ID
 func (c *client) GetFile(ctx context.Context, fileID string) (*gdrive.File, error) {
+	if err := c.waitForQuota(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
 	c.logger.Debug("Getting file: %s", fileID)
 
 	f, err := c.service.Files.Get(fileID).
@@ -113,6 +127,9 @@ func (c *client) GetFile(ctx context.Context, fileID string) (*gdrive.File, erro
 
 // ListPermissions lists all permissions for a file
 func (c *client) ListPermissions(ctx context.Context, fileID string) ([]gdrive.Permission, error) {
+	if err := c.waitForQuota(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
 	c.logger.Debug("Listing permissions for file: %s", fileID)
 
 	r, err := c.service.Permissions.List(fileID).
@@ -155,6 +172,9 @@ func (c *client) ListPermissions(ctx context.Context, fileID string) ([]gdrive.P
 
 // DeletePermission removes a permission from a file
 func (c *client) DeletePermission(ctx context.Context, fileID string, permissionID string) error {
+	if err := c.waitForQuota(ctx); err != nil {
+		return fmt.Errorf("rate limiter: %w", err)
+	}
 	c.logger.Debug("Deleting permission %s from file %s", permissionID, fileID)
 
 	err := c.service.Permissions.Delete(fileID, permissionID).
@@ -170,6 +190,9 @@ func (c *client) DeletePermission(ctx context.Context, fileID string, permission
 
 // ListDrives lists all Shared Drives
 func (c *client) ListDrives(ctx context.Context, adminAccess bool) ([]gdrive.Drive, error) {
+	if err := c.waitForQuota(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
 	c.logger.Debug("Listing drives, adminAccess: %v", adminAccess)
 
 	call := c.service.Drives.List().
@@ -220,6 +243,9 @@ func (c *client) ListDrives(ctx context.Context, adminAccess bool) ([]gdrive.Dri
 
 // GetDrive retrieves a Shared Drive by ID
 func (c *client) GetDrive(ctx context.Context, driveID string, adminAccess bool) (*gdrive.Drive, error) {
+	if err := c.waitForQuota(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
 	c.logger.Debug("Getting drive: %s, adminAccess: %v", driveID, adminAccess)
 
 	call := c.service.Drives.Get(driveID).

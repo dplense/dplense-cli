@@ -75,7 +75,7 @@ func (r *MetadataResolver) ResolveDriveName(driveID string) string {
 }
 
 // GetDriveName gets the drive name for a file
-func (r *MetadataResolver) GetDriveName(file *gdrive.File) string {
+func (r *MetadataResolver) GetDriveName(ctx context.Context, file *gdrive.File) string {
 	// 1. Check explicit DriveID on the file
 	if file.DriveID != "" {
 		return r.ResolveDriveName(file.DriveID)
@@ -84,7 +84,7 @@ func (r *MetadataResolver) GetDriveName(file *gdrive.File) string {
 	// 2. Check if parent folder belongs to a Shared Drive
 	if len(file.Parents) > 0 {
 		parentID := file.Parents[0]
-		folderInfo := r.GetFolderInfo(parentID)
+		folderInfo := r.GetFolderInfo(ctx, parentID)
 		if folderInfo.DriveID != "" {
 			return r.ResolveDriveName(folderInfo.DriveID)
 		}
@@ -116,18 +116,18 @@ func (r *MetadataResolver) GetOwnerName(file *gdrive.File) string {
 }
 
 // GetFolderName gets the folder name by ID
-func (r *MetadataResolver) GetFolderName(parentID string) string {
-	return r.GetFolderInfo(parentID).Name
+func (r *MetadataResolver) GetFolderName(ctx context.Context, parentID string) string {
+	return r.GetFolderInfo(ctx, parentID).Name
 }
 
 // GetFolderPath builds the full folder path for a file by recursively traversing parents
-func (r *MetadataResolver) GetFolderPath(file *gdrive.File) string {
+func (r *MetadataResolver) GetFolderPath(ctx context.Context, file *gdrive.File) string {
 	if len(file.Parents) == 0 {
 		return "/"
 	}
 
 	// Build path by recursively traversing parent folders
-	path := r.buildPathRecursive(file.Parents[0], 0, 20) // Max depth of 20 to prevent infinite loops
+	path := r.buildPathRecursive(ctx, file.Parents[0], 0, 20) // Max depth of 20 to prevent infinite loops
 
 	if path == "" {
 		return "/"
@@ -137,7 +137,7 @@ func (r *MetadataResolver) GetFolderPath(file *gdrive.File) string {
 }
 
 // buildPathRecursive recursively builds the folder path
-func (r *MetadataResolver) buildPathRecursive(folderID string, depth int, maxDepth int) string {
+func (r *MetadataResolver) buildPathRecursive(ctx context.Context, folderID string, depth int, maxDepth int) string {
 	// Safety check to prevent infinite recursion
 	if depth >= maxDepth {
 		r.logger.Debug("Max depth reached while building path for folder: %s", folderID)
@@ -149,7 +149,7 @@ func (r *MetadataResolver) buildPathRecursive(folderID string, depth int, maxDep
 	}
 
 	// Get folder info
-	folderInfo := r.GetFolderInfo(folderID)
+	folderInfo := r.GetFolderInfo(ctx, folderID)
 
 	// Check if we've reached root or an orphan
 	if folderInfo.Name == "" || folderInfo.Name == "Root/Orphan" || strings.Contains(folderInfo.Name, "Unknown Folder") {
@@ -157,7 +157,6 @@ func (r *MetadataResolver) buildPathRecursive(folderID string, depth int, maxDep
 	}
 
 	// Get the parent folder using the Drive API
-	ctx := context.Background()
 	parentFile, err := r.client.GetFile(ctx, folderID)
 	if err != nil {
 		r.logger.Debug("Failed to get parent folder %s: %v", folderID, err)
@@ -166,7 +165,7 @@ func (r *MetadataResolver) buildPathRecursive(folderID string, depth int, maxDep
 
 	// If this folder has parents, recurse
 	if len(parentFile.Parents) > 0 {
-		parentPath := r.buildPathRecursive(parentFile.Parents[0], depth+1, maxDepth)
+		parentPath := r.buildPathRecursive(ctx, parentFile.Parents[0], depth+1, maxDepth)
 		if parentPath == "" {
 			return "/" + folderInfo.Name
 		}
@@ -178,7 +177,7 @@ func (r *MetadataResolver) buildPathRecursive(folderID string, depth int, maxDep
 }
 
 // GetFolderInfo gets folder information by ID with caching
-func (r *MetadataResolver) GetFolderInfo(parentID string) FolderInfo {
+func (r *MetadataResolver) GetFolderInfo(ctx context.Context, parentID string) FolderInfo {
 	if parentID == "" {
 		return FolderInfo{Name: "Root/Orphan", DriveID: ""}
 	}
@@ -194,9 +193,6 @@ func (r *MetadataResolver) GetFolderInfo(parentID string) FolderInfo {
 	r.logger.Debug("Resolving Folder ID: %s", parentID)
 
 	// Fetch folder using the client
-	// Note: We need context for this, but for now we'll use background context
-	// In production, this should accept context as a parameter
-	ctx := context.Background()
 	file, err := r.client.GetFile(ctx, parentID)
 	if err != nil {
 		r.mu.Lock()
