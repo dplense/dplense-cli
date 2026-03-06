@@ -9,14 +9,25 @@ import (
 var RequiredScopes = []string{
 	"https://www.googleapis.com/auth/drive.readonly",                // Read-only access to Drive
 	"https://www.googleapis.com/auth/drive.metadata.readonly",       // Read-only access to Drive metadata
+	"https://www.googleapis.com/auth/drive.labels.readonly",         // Read-only access to Drive labels
 	"https://www.googleapis.com/auth/admin.directory.user.readonly", // Read-only access to users
 }
 
-// DriveScopes returns the scopes needed for Drive API operations
+// DriveScopes returns the scopes needed for Drive API operations.
+// Note: drive.labels.readonly is NOT included here — it is only used by
+// NewLabelsService via LabelsScopes(). Including it here would break
+// authentication if the scope is not authorized in domain-wide delegation.
 func DriveScopes() []string {
 	return []string{
 		"https://www.googleapis.com/auth/drive.readonly",
 		"https://www.googleapis.com/auth/drive.metadata.readonly",
+	}
+}
+
+// LabelsScopes returns the scopes needed for Drive Labels API operations
+func LabelsScopes() []string {
+	return []string{
+		"https://www.googleapis.com/auth/drive.labels.readonly",
 	}
 }
 

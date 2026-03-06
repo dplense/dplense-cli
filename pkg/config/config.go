@@ -6,32 +6,44 @@ import (
 	"path/filepath"
 )
 
+// LoggingConfig holds file logging settings
+type LoggingConfig struct {
+	Enabled  bool   `yaml:"enabled" mapstructure:"enabled"`
+	FilePath string `yaml:"file_path" mapstructure:"file_path"`
+}
+
 // Config represents the application configuration
 type Config struct {
-	InternalDomains []string `yaml:"internal_domains" mapstructure:"internal_domains"`
-	TrustedDomains  []string `yaml:"trusted_domains" mapstructure:"trusted_domains"`
-	IncludedDrives  []string `yaml:"included_drives" mapstructure:"included_drives"` // Whitelist: only scan these drives
-	ExcludedDrives  []string `yaml:"excluded_drives" mapstructure:"excluded_drives"` // Blacklist: skip these drives
-	DefaultScope    string   `yaml:"default_scope" mapstructure:"default_scope"`
-	DryRun          bool     `yaml:"dry_run" mapstructure:"dry_run"`
-	CredentialsPath string   `yaml:"credentials_path" mapstructure:"credentials_path"`
-	ImpersonateUser string   `yaml:"impersonate_user" mapstructure:"impersonate_user"`
+	InternalDomains []string      `yaml:"internal_domains" mapstructure:"internal_domains"`
+	TrustedDomains  []string      `yaml:"trusted_domains" mapstructure:"trusted_domains"`
+	IncludedDrives  []string      `yaml:"included_drives" mapstructure:"included_drives"` // Whitelist: only scan these drives
+	ExcludedDrives  []string      `yaml:"excluded_drives" mapstructure:"excluded_drives"` // Blacklist: skip these drives
+	DefaultScope    string        `yaml:"default_scope" mapstructure:"default_scope"`
+	DryRun          bool          `yaml:"dry_run" mapstructure:"dry_run"`
+	CredentialsPath string        `yaml:"credentials_path" mapstructure:"credentials_path"`
+	ImpersonateUser string        `yaml:"impersonate_user" mapstructure:"impersonate_user"`
+	Logging         LoggingConfig `yaml:"logging" mapstructure:"logging"`
 }
 
 // DefaultConfig returns a configuration with default values
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	defaultCredentialsPath := filepath.Join(homeDir, ".gdaudit", "credentials.json")
+	defaultLogPath := filepath.Join(homeDir, ".gdaudit", "audit.log")
 
 	return &Config{
 		InternalDomains: []string{},
 		TrustedDomains:  []string{},
 		IncludedDrives:  []string{}, // Empty = all drives included
 		ExcludedDrives:  []string{},
-		DefaultScope:    "active",
+		DefaultScope:    "shared-drives",
 		DryRun:          true, // Safety default
 		CredentialsPath: defaultCredentialsPath,
 		ImpersonateUser: "",
+		Logging: LoggingConfig{
+			Enabled:  false,
+			FilePath: defaultLogPath,
+		},
 	}
 }
 
@@ -53,6 +65,10 @@ func (c *Config) Validate() error {
 
 	if c.CredentialsPath == "" {
 		return fmt.Errorf("credentials_path cannot be empty")
+	}
+
+	if c.Logging.Enabled && c.Logging.FilePath == "" {
+		return fmt.Errorf("logging.file_path cannot be empty when logging.enabled is true")
 	}
 
 	return nil

@@ -10,6 +10,7 @@ type File struct {
 	DriveID     string   `json:"driveId"`
 	Parents     []string `json:"parents"`
 	Owners      []Owner  `json:"owners"`
+	Labels      []string `json:"labels,omitempty"` // Human-readable label names (resolved by labels.Resolver)
 }
 
 // Owner represents a file owner
@@ -64,4 +65,7 @@ type DriveClient interface {
 
 	// GetDrive retrieves a Shared Drive by ID
 	GetDrive(ctx context.Context, driveID string, adminAccess bool) (*Drive, error)
+
+	// SetIncludeLabels sets label IDs to request in Files.List calls
+	SetIncludeLabels(labelIDs string)
 }

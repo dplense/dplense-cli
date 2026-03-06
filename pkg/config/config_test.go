@@ -8,8 +8,8 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.DefaultScope != "active" {
-		t.Errorf("Expected default scope 'active', got '%s'", config.DefaultScope)
+	if config.DefaultScope != "shared-drives" {
+		t.Errorf("Expected default scope 'shared-drives', got '%s'", config.DefaultScope)
 	}
 	if !config.DryRun {
 		t.Error("Expected DryRun to be true by default")

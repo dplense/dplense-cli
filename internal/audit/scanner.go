@@ -19,8 +19,9 @@ import (
 // ScanOptions holds immutable options for a single scan invocation.
 // Passed by value to avoid race conditions with concurrent worker goroutines.
 type ScanOptions struct {
-	FilterSharedWith string // Only show files shared with this email/pattern
-	FilterPublicOnly bool   // Only show files with public "anyone" links
+	FilterSharedWith string   // Only show files shared with this email/pattern
+	FilterPublicOnly bool     // Only show files with public "anyone" links
+	FilterRiskLevels []string // Only show issues at these risk levels (empty = all)
 }
 
 // Scanner performs security audits on Google Drive files
@@ -33,6 +34,7 @@ type Scanner struct {
 	progressFunc       func(filesScanned, issuesFound int)
 	targetProgressFunc func(targetIdx, targetTotal int, targetName string)
 	resolver           *drive.MetadataResolver
+	labelsAvailable    bool // true when Labels API is configured and working
 }
 
 // NewScanner creates a new scanner instance
@@ -72,6 +74,12 @@ func (s *Scanner) SetTargetProgressFunc(fn func(targetIdx, targetTotal int, targ
 	s.targetProgressFunc = fn
 }
 
+// SetLabelsAvailable marks that the Labels API is configured and label data
+// will be present on files. When false, Label field shows "Cannot be retrieved".
+func (s *Scanner) SetLabelsAvailable(available bool) {
+	s.labelsAvailable = available
+}
+
 // matchesSharedWithPattern checks if an email matches the shared-with filter pattern.
 // Supports wildcard patterns:
 //   - *@example.com matches all emails from example.com domain
@@ -108,10 +116,12 @@ func (s *Scanner) Scan(ctx context.Context, scope string, opts ScanOptions) (*mo
 	result := models.NewScanResult(scope)
 
 	// Resolve scope to targets
+	s.logger.Info("Starting scan: scope=%s, workers=%d", scope, s.workerCount)
 	targets, err := ResolveScope(scope, s.dirClient, s.driveClient, s.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve scope: %w", err)
 	}
+	s.logger.Info("Scope resolved: %d targets found", len(targets))
 
 	// Filter targets by included_drives and excluded_drives
 	filteredTargets := make([]Target, 0, len(targets))
@@ -156,7 +166,7 @@ func (s *Scanner) Scan(ctx context.Context, scope string, opts ScanOptions) (*mo
 			targetName = target.ID
 		}
 
-		s.logger.Debug("Scanning target %d/%d: %s", idx+1, len(filteredTargets), targetName)
+		s.logger.Info("Scanning target %d/%d: %s (type=%s)", idx+1, len(filteredTargets), targetName, target.Type)
 
 		// Notify target progress callback (for progress reporter)
 		if s.targetProgressFunc != nil {
@@ -176,8 +186,8 @@ func (s *Scanner) Scan(ctx context.Context, scope string, opts ScanOptions) (*mo
 		filesThisTarget := totalFileCount - filesBeforeScan
 		issuesThisTarget := len(result.Issues) - issuesBeforeScan
 
-		s.logger.Debug("Completed target %d/%d (Files: %d, Issues: %d)",
-			idx+1, len(filteredTargets), filesThisTarget, issuesThisTarget)
+		s.logger.Info("Completed target %d/%d: %s — %d files, %d issues",
+			idx+1, len(filteredTargets), targetName, filesThisTarget, issuesThisTarget)
 	}
 
 	// Update metadata with final counts
@@ -187,7 +197,8 @@ func (s *Scanner) Scan(ctx context.Context, scope string, opts ScanOptions) (*mo
 	// Set duration
 	result.SetDuration(time.Since(startTime))
 
-	s.logger.Debug("Scan complete: %d files scanned, %d issues found", result.Metadata.TotalFilesScanned, result.Metadata.IssuesFound)
+	s.logger.Info("Scan complete: %d files scanned, %d issues found in %s",
+		result.Metadata.TotalFilesScanned, result.Metadata.IssuesFound, time.Since(startTime).Round(time.Millisecond))
 	return result, nil
 }
 
@@ -200,11 +211,11 @@ func (s *Scanner) scanTarget(ctx context.Context, target Target, result *models.
 	if target.Type == "drive" {
 		// For shared drives, pass the driveId to limit results to that drive
 		driveID = target.ID
-		s.logger.Debug("Scanning shared drive %s (ID: %s)", target.Name, target.ID)
+		s.logger.Info("Scanning shared drive: %s (ID: %s)", target.Name, target.ID)
 	} else {
 		// For user scopes, scan their files (no driveId limit)
 		driveID = ""
-		s.logger.Debug("Scanning user %s", target.Email)
+		s.logger.Info("Scanning user: %s", target.Email)
 	}
 
 	pageToken := ""
@@ -230,12 +241,7 @@ func (s *Scanner) scanTarget(ctx context.Context, target Target, result *models.
 			break
 		}
 
-		s.logger.Debug("Page %d: Processing %d files", pageCount, len(fileList.Files))
-
-		// Log progress for every page (Debug only — progress reporter handles user-facing output)
-		if pageCount%10 == 0 || pageCount == 1 {
-			s.logger.Debug("Processing page %d... (%d files so far)", pageCount, *totalFileCount)
-		}
+		s.logger.Info("Page %d: processing %d files (%d total so far)", pageCount, len(fileList.Files), *totalFileCount)
 
 		// Process files concurrently
 		issues := s.processFiles(ctx, fileList.Files, opts)
@@ -378,6 +384,15 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File, opts ScanOp
 		return nil
 	}
 
+	// Count external permissions for logging
+	extCount := 0
+	for _, p := range modelPerms {
+		if !p.IsInternal {
+			extCount++
+		}
+	}
+	s.logger.Info("Issue found: file=%s (%s), external_permissions=%d, public=%v", file.Name, file.ID, extCount, hasPublic)
+
 	// Apply --public filter: only show files with public "anyone" links
 	if opts.FilterPublicOnly && !hasPublic {
 		return nil
@@ -398,12 +413,23 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File, opts ScanOp
 		}
 	}
 
+	// Determine label value
+	var label string
+	if !s.labelsAvailable {
+		label = "Cannot be retrieved"
+	} else if len(file.Labels) > 0 {
+		label = strings.Join(file.Labels, "; ")
+	} else {
+		label = "Unclassified"
+	}
+
 	// Create file issue
 	issue := models.FileIssue{
 		FileID:      file.ID,
 		FileName:    file.Name,
 		WebViewLink: file.WebViewLink,
 		DriveID:     file.DriveID,
+		Label:       label,
 		Permissions: modelPerms,
 	}
 
@@ -427,6 +453,28 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File, opts ScanOp
 	}
 	if filter.ShouldExcludeTrustedOnly(issue, s.config.TrustedDomains) {
 		return nil
+	}
+
+	// Apply --risk-level filter: only include issues with matching risk levels
+	if len(opts.FilterRiskLevels) > 0 {
+		hasMatchingRisk := false
+		for _, perm := range issue.Permissions {
+			if perm.IsInternal {
+				continue
+			}
+			for _, level := range opts.FilterRiskLevels {
+				if strings.EqualFold(string(perm.RiskLevel), level) {
+					hasMatchingRisk = true
+					break
+				}
+			}
+			if hasMatchingRisk {
+				break
+			}
+		}
+		if !hasMatchingRisk {
+			return nil
+		}
 	}
 
 	return &issue

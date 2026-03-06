@@ -97,7 +97,7 @@ func resolveActiveUsers(ctx context.Context, dirClient gdrive.DirectoryClient, l
 			"Alternatively, use a scope that doesn't require Directory API:\n" +
 			"  - shared-drives: ./gdaudit scan --scope shared-drives")
 	}
-	log.Debug("Resolving active users")
+	log.Info("Resolving active users from directory...")
 	users, err := dirClient.ListUsers(ctx, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list active users: %w", err)
@@ -114,7 +114,7 @@ func resolveActiveUsers(ctx context.Context, dirClient gdrive.DirectoryClient, l
 		})
 	}
 
-	log.Debug("Resolved %d active users", len(targets))
+	log.Info("Resolved %d active users", len(targets))
 	return targets, nil
 }
 
@@ -123,7 +123,7 @@ func resolveSuspendedUsers(ctx context.Context, dirClient gdrive.DirectoryClient
 	if dirClient == nil {
 		return nil, fmt.Errorf("directory client is required for 'suspended' scope but is not available. Please configure domain-wide delegation with --impersonate flag or use a different scope like 'shared-drives'")
 	}
-	log.Debug("Resolving suspended users")
+	log.Info("Resolving suspended users from directory...")
 	users, err := dirClient.ListUsers(ctx, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list suspended users: %w", err)
@@ -140,7 +140,7 @@ func resolveSuspendedUsers(ctx context.Context, dirClient gdrive.DirectoryClient
 		})
 	}
 
-	log.Debug("Resolved %d suspended users", len(targets))
+	log.Info("Resolved %d suspended users", len(targets))
 	return targets, nil
 }
 
@@ -162,7 +162,7 @@ func resolveSharedDrives(ctx context.Context, driveClient gdrive.DriveClient, lo
 		}
 	}
 
-	log.Debug("Found %d shared drives (before filtering)", len(drives))
+	log.Info("Found %d shared drives (before filtering)", len(drives))
 
 	targets := make([]Target, 0, len(drives))
 	for _, drive := range drives {
@@ -188,24 +188,38 @@ func resolveSharedDrives(ctx context.Context, driveClient gdrive.DriveClient, lo
 	return targets, nil
 }
 
-// resolveUser resolves a single user by email
+// resolveUser resolves a single user by email.
+// Tries Directory API first for richer metadata; falls back to email-only target
+// when Directory API is unavailable or the user cannot be found (e.g. external users).
 func resolveUser(ctx context.Context, email string, dirClient gdrive.DirectoryClient, log logger.Logger) ([]Target, error) {
-	if dirClient == nil {
-		return nil, fmt.Errorf("directory client is required for 'user:<email>' scope but is not available. Please configure domain-wide delegation with --impersonate flag or use a different scope like 'shared-drives'")
-	}
-	log.Debug("Resolving user: %s", email)
-	user, err := dirClient.GetUser(ctx, email)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user %s: %w", email, err)
+	// Try Directory API for richer metadata (display name, ID)
+	if dirClient != nil {
+		log.Info("Resolving user via Directory API: %s", email)
+		user, err := dirClient.GetUser(ctx, email)
+		if err != nil {
+			log.Info("Directory lookup not available for %s, using email directly", email)
+		} else {
+			log.Info("Resolved user: %s (%s)", user.Email, user.DisplayName)
+			return []Target{
+				{
+					Type:  "user",
+					ID:    user.ID,
+					Email: user.Email,
+					Name:  user.DisplayName,
+					Owner: user.Email,
+				},
+			}, nil
+		}
 	}
 
+	// Fallback: create target directly from the email
+	log.Info("Using email directly: %s", email)
 	return []Target{
 		{
 			Type:  "user",
-			ID:    user.ID,
-			Email: user.Email,
-			Name:  user.DisplayName,
-			Owner: user.Email, // For users, the owner is themselves
+			Email: email,
+			Name:  email,
+			Owner: email,
 		},
 	}, nil
 }

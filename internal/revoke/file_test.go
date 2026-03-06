@@ -31,7 +31,7 @@ func TestRevokeExternalPermissions_ExternalUserRevoked(t *testing.T) {
 	log := logger.New(logger.LevelDebug, false)
 	revoker := NewFileRevoker(mock, cfg, log, false)
 
-	err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
+	_, err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestRevokeExternalPermissions_InternalNotRevoked(t *testing.T) {
 	log := logger.New(logger.LevelDebug, false)
 	revoker := NewFileRevoker(mock, cfg, log, false)
 
-	err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
+	_, err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestRevokeExternalPermissions_OwnerNotRevoked(t *testing.T) {
 	log := logger.New(logger.LevelDebug, false)
 	revoker := NewFileRevoker(mock, cfg, log, false)
 
-	err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
+	_, err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRevokeExternalPermissions_DryRun(t *testing.T) {
 	log := logger.New(logger.LevelDebug, false)
 	revoker := NewFileRevoker(mock, cfg, log, true) // dryRun = true
 
-	err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
+	_, err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRevokeExternalPermissions_PublicAnyoneRevoked(t *testing.T) {
 	log := logger.New(logger.LevelDebug, false)
 	revoker := NewFileRevoker(mock, cfg, log, false)
 
-	err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
+	_, err := revoker.RevokeExternalPermissions(context.Background(), "file-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

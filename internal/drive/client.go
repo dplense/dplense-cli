@@ -3,27 +3,69 @@ package drive
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"gdrive-audit/internal/auth"
 	"gdrive-audit/internal/logger"
+	"gdrive-audit/pkg/config"
 	"gdrive-audit/pkg/gdrive"
 
 	driveapi "google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // client implements the DriveClient interface
 type client struct {
-	service     *driveapi.Service
-	logger      logger.Logger
-	rateLimiter *gdrive.RateLimiter
+	service       *driveapi.Service
+	logger        logger.Logger
+	rateLimiter   *gdrive.RateLimiter
+	includeLabels string                                   // comma-separated label IDs for Files.List
+	labelResolver func([]*driveapi.Label) []string // converts raw API labels to human-readable strings
 }
 
-// NewClient creates a new Drive client with built-in rate limiting
-func NewClient(service *driveapi.Service, log logger.Logger) gdrive.DriveClient {
+// NewClient creates a new Drive client with built-in rate limiting.
+// Handles authentication internally using credentials from config.
+func NewClient(ctx context.Context, cfg *config.Config, log logger.Logger) (gdrive.DriveClient, error) {
+	service, err := auth.NewDriveService(ctx, cfg.CredentialsPath, cfg.ImpersonateUser)
+	if err != nil {
+		if strings.Contains(err.Error(), "unauthorized_client") || strings.Contains(err.Error(), "401") {
+			return nil, fmt.Errorf("failed to initialize Drive service: %w\n\n"+
+				"TIP: This usually means domain-wide delegation is not configured.\n"+
+				"1. Make sure you're using --impersonate flag with a user email\n"+
+				"2. Configure domain-wide delegation in Google Admin Console:\n"+
+				"   - Go to: https://admin.google.com\n"+
+				"   - Security > API Controls > Domain-wide Delegation\n"+
+				"   - Add/Edit your service account\n"+
+				"   - Authorize these scopes:\n"+
+				"     * https://www.googleapis.com/auth/drive.readonly\n"+
+				"     * https://www.googleapis.com/auth/drive.metadata.readonly\n"+
+				"3. Wait a few minutes for changes to propagate", err)
+		}
+		return nil, fmt.Errorf("failed to initialize Drive service: %w", err)
+	}
 	return &client{
 		service:     service,
 		logger:      log,
 		rateLimiter: gdrive.NewRateLimiter(5, 1*time.Second, 30*time.Second),
+	}, nil
+}
+
+// SetIncludeLabels sets label IDs to request in Files.List calls.
+func (c *client) SetIncludeLabels(labelIDs string) {
+	c.includeLabels = labelIDs
+}
+
+// SetLabelResolver sets a callback that converts raw API labels to human-readable strings.
+func (c *client) SetLabelResolver(fn func([]*driveapi.Label) []string) {
+	c.labelResolver = fn
+}
+
+// ConfigureLabelResolver sets the label resolver on a DriveClient.
+// This is a package-level helper so callers don't need to import the Drive API types.
+func ConfigureLabelResolver(dc gdrive.DriveClient, resolver func([]*driveapi.Label) []string) {
+	if c, ok := dc.(*client); ok {
+		c.labelResolver = resolver
 	}
 }
 
@@ -39,12 +81,22 @@ func (c *client) ListFiles(ctx context.Context, query string, pageToken string, 
 	}
 	c.logger.Debug("Listing files with query: %s, pageToken: %s, driveID: %s", query, pageToken, driveID)
 
+	// Build fields list — include labelInfo only when labels are configured
+	fileFields := "id, name, webViewLink, driveId, parents, owners(displayName, emailAddress, me)"
+	if c.includeLabels != "" {
+		fileFields += ", labelInfo"
+	}
+
 	call := c.service.Files.List().
 		Q(query).
 		PageSize(100).
-		Fields("nextPageToken, files(id, name, webViewLink, driveId, parents, owners(displayName, emailAddress, me))").
+		Fields(googleapi.Field("nextPageToken, files(" + fileFields + ")")).
 		SupportsAllDrives(true).
 		IncludeItemsFromAllDrives(true)
+
+	if c.includeLabels != "" {
+		call = call.IncludeLabels(c.includeLabels)
+	}
 
 	// If driveID is specified, limit search to that specific drive
 	if driveID != "" {
@@ -63,6 +115,8 @@ func (c *client) ListFiles(ctx context.Context, query string, pageToken string, 
 		return nil, fmt.Errorf("failed to list files: %w", err)
 	}
 
+	c.logger.Info("Files.List API: returned %d files, hasNextPage=%v, driveID=%s", len(r.Files), r.NextPageToken != "", driveID)
+
 	files := make([]gdrive.File, 0, len(r.Files))
 	for _, f := range r.Files {
 		owners := make([]gdrive.Owner, 0, len(f.Owners))
@@ -74,14 +128,21 @@ func (c *client) ListFiles(ctx context.Context, query string, pageToken string, 
 			})
 		}
 
-		files = append(files, gdrive.File{
+		gfile := gdrive.File{
 			ID:          f.Id,
 			Name:        f.Name,
 			WebViewLink: f.WebViewLink,
 			DriveID:     f.DriveId,
 			Parents:     f.Parents,
 			Owners:      owners,
-		})
+		}
+
+		// Resolve labels if resolver is configured and file has label info
+		if c.labelResolver != nil && f.LabelInfo != nil && len(f.LabelInfo.Labels) > 0 {
+			gfile.Labels = c.labelResolver(f.LabelInfo.Labels)
+		}
+
+		files = append(files, gfile)
 	}
 
 	return &gdrive.FileList{
@@ -105,6 +166,8 @@ func (c *client) GetFile(ctx context.Context, fileID string) (*gdrive.File, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file %s: %w", fileID, err)
 	}
+
+	c.logger.Info("Files.Get API: fileID=%s, name=%s", fileID, f.Name)
 
 	owners := make([]gdrive.Owner, 0, len(f.Owners))
 	for _, o := range f.Owners {
@@ -140,6 +203,8 @@ func (c *client) ListPermissions(ctx context.Context, fileID string) ([]gdrive.P
 	if err != nil {
 		return nil, fmt.Errorf("failed to list permissions for file %s: %w", fileID, err)
 	}
+
+	c.logger.Info("Permissions.List API: fileID=%s, count=%d", fileID, len(r.Permissions))
 
 	permissions := make([]gdrive.Permission, 0, len(r.Permissions))
 	for _, p := range r.Permissions {
@@ -185,6 +250,7 @@ func (c *client) DeletePermission(ctx context.Context, fileID string, permission
 		return fmt.Errorf("failed to delete permission %s from file %s: %w", permissionID, fileID, err)
 	}
 
+	c.logger.Info("Permissions.Delete API: fileID=%s, permissionID=%s — revoked", fileID, permissionID)
 	return nil
 }
 
@@ -215,6 +281,8 @@ func (c *client) ListDrives(ctx context.Context, adminAccess bool) ([]gdrive.Dri
 		if err != nil {
 			return nil, fmt.Errorf("failed to list drives: %w", err)
 		}
+
+		c.logger.Info("Drives.List API: returned %d drives, hasNextPage=%v", len(r.Drives), r.NextPageToken != "")
 
 		for _, d := range r.Drives {
 			drive := gdrive.Drive{
@@ -259,6 +327,8 @@ func (c *client) GetDrive(ctx context.Context, driveID string, adminAccess bool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get drive %s: %w", driveID, err)
 	}
+
+	c.logger.Info("Drives.Get API: driveID=%s, name=%s", driveID, d.Name)
 
 	drive := &gdrive.Drive{
 		ID:          d.Id,

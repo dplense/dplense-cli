@@ -67,3 +67,9 @@ bin/
 
 # Test fixtures (if they contain sensitive data)
 test/fixtures/credentials*.json
+
+#prototype folders
+docs/
+node_modules/
+package-lock.json
+package.json

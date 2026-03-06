@@ -89,3 +89,6 @@ func (m *DriveMock) GetDrive(ctx context.Context, driveID string, adminAccess bo
 	}
 	return nil, fmt.Errorf("drive not found: %s", driveID)
 }
+
+// SetIncludeLabels implements DriveClient.SetIncludeLabels (no-op in mock)
+func (m *DriveMock) SetIncludeLabels(labelIDs string) {}

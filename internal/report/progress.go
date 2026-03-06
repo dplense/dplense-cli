@@ -3,115 +3,36 @@ package report
 import (
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"gdrive-audit/pkg/models"
+
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Messages sent to the Bubble Tea program from scanner callbacks.
+// spinner frames (Braille dots)
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-type progressMsg struct {
-	filesScanned int
-	issuesFound  int
-}
+// ProgressReporter shows animated scan progress using a simple \r-based spinner.
+// Writes to a single writer (typically os.Stderr) and never touches terminal state,
+// so subsequent output on stdout is unaffected.
+type ProgressReporter struct {
+	writer    io.Writer
+	startTime time.Time
 
-type targetMsg struct {
-	idx   int
-	total int
-	name  string
-}
-
-type doneMsg struct{}
-
-// progressModel is a Bubble Tea model for animated scan progress.
-// The view stays empty until the first targetMsg or progressMsg arrives,
-// so pre-scan logger messages ("Identifying all shared drives...") don't
-// get interleaved with the spinner output.
-type progressModel struct {
-	spinner      spinner.Model
+	mu           sync.Mutex
 	filesScanned int
 	issuesFound  int
 	targetIdx    int
 	targetTotal  int
 	targetName   string
-	started      bool // true after first data arrives
-	done         bool
-}
 
-func newProgressModel() progressModel {
-	s := spinner.New(spinner.WithSpinner(spinner.Dot))
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("69"))
-	return progressModel{
-		spinner: s,
-	}
-}
+	// ETA tracking
+	scanStartTime    time.Time
+	completedTargets int
 
-func (m progressModel) Init() tea.Cmd {
-	return m.spinner.Tick
-}
-
-func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case progressMsg:
-		m.started = true
-		m.filesScanned = msg.filesScanned
-		m.issuesFound = msg.issuesFound
-		return m, nil
-
-	case targetMsg:
-		m.started = true
-		m.targetIdx = msg.idx
-		m.targetTotal = msg.total
-		m.targetName = msg.name
-		return m, nil
-
-	case doneMsg:
-		m.done = true
-		return m, tea.Quit
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
-			return m, tea.Quit
-		}
-		return m, nil
-	}
-
-	return m, nil
-}
-
-func (m progressModel) View() string {
-	if m.done || !m.started {
-		return ""
-	}
-
-	spinnerView := m.spinner.View()
-
-	if m.targetTotal > 0 && m.targetName != "" {
-		name := m.targetName
-		if len(name) > 40 {
-			name = name[:37] + "..."
-		}
-		return fmt.Sprintf(" %s Scanning [%d/%d] %s — %d files, %d issues\n",
-			spinnerView, m.targetIdx, m.targetTotal, name, m.filesScanned, m.issuesFound)
-	}
-	return fmt.Sprintf(" %s Scanning... %d files, %d issues\n",
-		spinnerView, m.filesScanned, m.issuesFound)
-}
-
-// ProgressReporter wraps a Bubble Tea program to show animated scan progress.
-type ProgressReporter struct {
-	program      *tea.Program
-	writer       io.Writer
-	startTime    time.Time
-	filesScanned int
-	issuesFound  int
+	done chan struct{}
 }
 
 // NewProgressReporter creates a new progress reporter.
@@ -122,41 +43,160 @@ func NewProgressReporter(writer io.Writer) *ProgressReporter {
 	}
 }
 
-// Start launches the Bubble Tea program in a background goroutine.
+// Start launches the spinner goroutine.
 func (pr *ProgressReporter) Start() {
-	model := newProgressModel()
-	pr.program = tea.NewProgram(model, tea.WithOutput(pr.writer))
+	pr.done = make(chan struct{})
+
+	spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("69"))
+
 	go func() {
-		_, _ = pr.program.Run()
+		frame := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-pr.done:
+				// Clear the spinner line
+				fmt.Fprint(pr.writer, "\r\033[K")
+				return
+			case <-ticker.C:
+				pr.mu.Lock()
+				spinner := spinnerStyle.Render(spinnerFrames[frame%len(spinnerFrames)])
+				line := pr.renderLine(spinner)
+				fmt.Fprint(pr.writer, "\r\033[K"+line)
+				pr.mu.Unlock()
+				frame++
+			}
+		}
 	}()
+}
+
+// renderLine builds the status line (must be called under pr.mu).
+func (pr *ProgressReporter) renderLine(spinner string) string {
+	etaSuffix := pr.etaSuffix()
+
+	if pr.targetTotal > 0 && pr.targetName != "" {
+		name := pr.targetName
+		if len(name) > 40 {
+			name = name[:37] + "..."
+		}
+		return fmt.Sprintf(" %s Scanning [%d/%d] %s — %s files, %d issues%s",
+			spinner, pr.targetIdx, pr.targetTotal, name,
+			formatNumber(pr.filesScanned), pr.issuesFound, etaSuffix)
+	}
+	return fmt.Sprintf(" %s Scanning... %s files, %d issues%s",
+		spinner, formatNumber(pr.filesScanned), pr.issuesFound, etaSuffix)
+}
+
+// etaSuffix returns " — ~Xm Ys left" or "" (must be called under pr.mu).
+func (pr *ProgressReporter) etaSuffix() string {
+	if pr.completedTargets == 0 || pr.targetTotal == 0 {
+		return ""
+	}
+	elapsed := time.Since(pr.scanStartTime)
+	avgPerTarget := elapsed / time.Duration(pr.completedTargets)
+	remaining := pr.targetTotal - pr.targetIdx
+	if pr.targetIdx < pr.targetTotal {
+		remaining++
+	}
+	eta := avgPerTarget * time.Duration(remaining)
+	if eta > time.Second {
+		return fmt.Sprintf(" — ~%s left", formatETA(eta))
+	}
+	return ""
 }
 
 // SetTarget updates the current target being scanned.
 func (pr *ProgressReporter) SetTarget(idx, total int, name string) {
-	if pr.program != nil {
-		pr.program.Send(targetMsg{idx: idx, total: total, name: name})
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+
+	// If this is not the first target, the previous one just completed
+	if pr.targetIdx > 0 && idx > pr.targetIdx {
+		pr.completedTargets++
 	}
+	if pr.scanStartTime.IsZero() {
+		pr.scanStartTime = time.Now()
+	}
+	pr.targetIdx = idx
+	pr.targetTotal = total
+	pr.targetName = name
 }
 
 // Update reports a progress update from the scanner.
 func (pr *ProgressReporter) Update(filesScanned, issuesFound int) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 	pr.filesScanned = filesScanned
 	pr.issuesFound = issuesFound
-	if pr.program != nil {
-		pr.program.Send(progressMsg{filesScanned: filesScanned, issuesFound: issuesFound})
+}
+
+// Stop stops the spinner. The scan summary is displayed by the table's summary box.
+func (pr *ProgressReporter) Stop() {
+	if pr.done != nil {
+		close(pr.done)
+		// Small delay to let the goroutine clear the line
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-// Finish stops the Bubble Tea program and prints the final summary.
-func (pr *ProgressReporter) Finish() {
-	if pr.program != nil {
-		pr.program.Send(doneMsg{})
-		pr.program.Wait()
+// riskOrder returns a numeric order for risk levels (higher = more severe).
+func riskOrder(r models.RiskLevel) int {
+	switch r {
+	case models.RiskCritical:
+		return 4
+	case models.RiskHigh:
+		return 3
+	case models.RiskMedium:
+		return 2
+	case models.RiskLow:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// formatNumber formats an integer with thousands separators: 4700 → "4,700".
+func formatNumber(n int) string {
+	if n < 0 {
+		return "-" + formatNumber(-n)
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
 	}
 
-	duration := time.Since(pr.startTime)
-	fmt.Fprintf(pr.writer, "Scan complete: %d files scanned, %d issues found in %s\n",
-		pr.filesScanned, pr.issuesFound, formatDuration(duration))
+	// Build from right to left, inserting commas every 3 digits
+	s := fmt.Sprintf("%d", n)
+	result := make([]byte, 0, len(s)+len(s)/3)
+	for i, ch := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(ch))
+	}
+	return string(result)
+}
+
+// formatETA formats ETA duration in a compact human-friendly way: "4m 40s", "1h 5m", "45s".
+func formatETA(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Second {
+		return "<1s"
+	}
+
+	totalSeconds := int(d.Seconds())
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 // formatDuration formats a duration in a human-friendly way.

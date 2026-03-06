@@ -186,23 +186,24 @@ gdaudit revoke user <email> [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Preview changes without applying them (default: true) |
-| `--confirm` | Actually apply changes (required for real revocations) |
+| `--confirm` | Actually apply changes (default is dry-run/preview) |
+| `--user` | Revoke only this specific user (for `revoke file`) |
+| `--input` | Path to JSON from `gdaudit scan --output` (for `revoke user`) |
 
 #### Examples
 
 ```bash
-# Preview revoking user from a file
-gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz --dry-run
+# Preview revoking all external permissions from a file
+gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz
 
-# Actually revoke user from a file
+# Actually revoke all external permissions from a file
 gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz --confirm
 
-# Preview revoking user from all files
-gdaudit revoke user external@competitor.com --dry-run
+# Preview revoking user from all files in scan results
+gdaudit revoke user external@competitor.com --input results.json
 
 # Actually revoke user from all files
-gdaudit revoke user external@competitor.com --confirm
+gdaudit revoke user external@competitor.com --input results.json --confirm
 ```
 
 ### Report Command
@@ -217,22 +218,22 @@ gdaudit report [flags]
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `--input` | Input JSON file from previous scan | `--input scan-results.json` |
-| `--format` | Output format: `excel`, `csv`, `table` | `--format excel` |
-| `--output` | Output file path | `--output report.xlsx` |
-| `--strategy` | Excel grouping strategy: `by-file`, `by-user`, `by-risk` | `--strategy by-risk` |
+| `--input` | Input JSON from `gdaudit scan --output` (required) | `--input scan-results.json` |
+| `--format` | Output format: `xlsx` or `excel` | `--format xlsx` |
+| `--output` | Output file path (auto-generated from input if omitted) | `--output report.xlsx` |
+| `--strategy` | Excel grouping: `flat` (single sheet) or `by-owner` (sheet per owner) | `--strategy by-owner` |
 
 #### Examples
 
 ```bash
-# Generate Excel report
-gdaudit report --input results.json --format excel --output report.xlsx
+# Generate Excel report (output auto-generated as results.xlsx)
+gdaudit report --input results.json
 
-# Generate CSV report
-gdaudit report --input results.json --format csv --output report.csv
+# Generate Excel report with explicit output
+gdaudit report --input results.json --output report.xlsx
 
-# Generate Excel report grouped by risk level
-gdaudit report --input results.json --format excel --strategy by-risk --output report.xlsx
+# Generate Excel report grouped by owner
+gdaudit report --input results.json --strategy by-owner
 ```
 
 ### Init Command
@@ -396,11 +397,11 @@ gdaudit scan --scope shared-drives \
 # Scan and save results
 gdaudit scan --scope shared-drives --output scan-results.json
 
-# Generate Excel report
-gdaudit report --input scan-results.json \
-  --format excel \
-  --strategy by-risk \
-  --output security-report.xlsx
+# Generate Excel report (output auto-generated as scan-results.xlsx)
+gdaudit report --input scan-results.json
+
+# Or with explicit output and grouping
+gdaudit report --input scan-results.json --strategy by-owner --output security-report.xlsx
 ```
 
 ### Example 4: Interactive Audit
@@ -415,11 +416,11 @@ gdaudit scan --scope shared-drives --interactive
 # First, scan to find files
 gdaudit scan --scope shared-drives --shared-with "external@competitor.com" --output results.json
 
-# Preview revocation
-gdaudit revoke user external@competitor.com --dry-run
+# Preview revocation (dry-run by default)
+gdaudit revoke user external@competitor.com --input results.json
 
 # Actually revoke (requires --confirm)
-gdaudit revoke user external@competitor.com --confirm
+gdaudit revoke user external@competitor.com --input results.json --confirm
 ```
 
 ## Contributing

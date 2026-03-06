@@ -455,10 +455,78 @@ Scan complete: 2340 files scanned, 87 issues found in 5m23s
 
 ---
 
-## Next Steps / Future Improvements
+## Date: 2026-02-25
 
-1. Consider adding regex support for more advanced pattern matching
-2. Add progress percentage display in TUI progress bar
-3. Consider adding estimated time remaining based on scan progress
-4. Add support for multiple pattern filters (comma-separated)
-5. Consider adding case-insensitive domain matching options
+---
+
+## 17. CLI Command Improvements (15 items)
+
+Implemented a comprehensive set of improvements based on UX analysis of all CLI commands.
+
+### Bug fixes:
+
+**1.1 Fixed default_scope from config** (`cmd/gdaudit/scan.go`)
+- `scanScope` was `""` by default but config's `default_scope` was never applied
+- Added: `if scanScope == "" { scanScope = cfg.DefaultScope }`
+
+**1.2 Fixed case-sensitive confirmation** (`cmd/gdaudit/revoke.go`)
+- `confirmation != "yes"` rejected "Yes", "YES" etc.
+- Changed to `strings.ToLower(strings.TrimSpace(confirmation)) != "yes"` in both `runRevokeFile()` and `runRevokeUser()`
+
+**1.4 Separate revokeInput variable** (`cmd/gdaudit/revoke.go`)
+- `revokeUserCmd` was using `reportInput` from report.go — potential conflict
+- Created dedicated `revokeInput string` variable
+
+**1.3 Added excel format alias** (`cmd/gdaudit/report.go`)
+- `--format excel` now accepted as alias for `xlsx`
+- Fixed README which documented non-existent `by-file`, `by-risk` strategies
+
+### UX improvements:
+
+**2.1 Added Quick Start to root help** (`cmd/gdaudit/root.go`)
+- Root `--help` now shows workflow: `init → scan → report → revoke`
+
+**2.2 Added workflow hints to help text** (`cmd/gdaudit/revoke.go`, `cmd/gdaudit/report.go`)
+- `--input` flag descriptions now mention it expects JSON from `gdaudit scan --output`
+- Added `Long` description to `revokeUserCmd` with examples
+
+**2.3 Removed `--dry-run` flag** (`cmd/gdaudit/revoke.go`)
+- Dry-run is now always the default; `--confirm` is the only opt-in
+- Simpler UX: removed confusing `--dry-run=false` + `--confirm` interaction
+
+**2.4 Added `--risk-level` filter** (`cmd/gdaudit/scan.go`, `internal/audit/scanner.go`)
+- New flag: `--risk-level critical,high` filters scan results by risk level
+- Added `FilterRiskLevels []string` to `ScanOptions`
+- Filter applied in `processFile()` — checks max risk level of external permissions
+
+**2.5 Revoke summary with count** (`cmd/gdaudit/revoke.go`, `internal/revoke/file.go`, `internal/revoke/user.go`)
+- `RevokeExternalPermissions()` now returns `(int, error)` — count of revoked permissions
+- `RevokeUserFromFiles()` now returns `(revokedCount, filesAffected, error)`
+- CLI shows: "Revoked 5 permission(s) from 3 file(s) for user ext@example.com"
+
+**2.6 Risk level breakdown in scan summary** (`internal/report/progress.go`)
+- `FinishWithResult(result)` replaces `Finish()` — accepts scan result for risk analysis
+- Summary now shows: "Scan complete: 200 files, 27 issues (3 critical, 8 high, 16 medium) in 25s"
+
+**2.7 Auto-generate report output filename** (`cmd/gdaudit/report.go`)
+- If `--output` is omitted, auto-generates from `--input`: `scan.json → scan.xlsx`
+
+**2.8 Added `--wide` flag for list-drives** (`cmd/gdaudit/scan.go`)
+- `--wide` disables truncation of names, owner info, and IDs in `--list-drives` output
+
+### CI/CD improvements:
+
+**3.1 Environment variable support** (`cmd/gdaudit/root.go`)
+- `GDAUDIT_CREDENTIALS` — path to credentials file
+- `GDAUDIT_IMPERSONATE` — user email for delegation
+- `GDAUDIT_DEBUG=1` — enable debug logging
+- Priority: config file < env vars < CLI flags
+
+**3.2 Added `--quiet` flag** (`cmd/gdaudit/root.go`)
+- `-q` / `--quiet` suppresses all log output (writes to `io.Discard`)
+- Useful for `gdaudit scan --format json -q | jq` workflows
+
+### Documentation:
+- Updated README.MD to match actual code: corrected report strategies, revoke flags, added examples
+
+**Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅

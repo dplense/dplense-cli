@@ -35,6 +35,8 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("dry_run", true)
 	v.SetDefault("credentials_path", "")
 	v.SetDefault("impersonate_user", "")
+	v.SetDefault("logging.enabled", false)
+	v.SetDefault("logging.file_path", "")
 
 	// Try to read config file (it's okay if it doesn't exist)
 	if err := v.ReadInConfig(); err != nil {
@@ -54,6 +56,10 @@ func LoadConfig(path string) (*Config, error) {
 	if config.CredentialsPath == "" {
 		homeDir, _ := os.UserHomeDir()
 		config.CredentialsPath = filepath.Join(homeDir, ".gdaudit", "credentials.json")
+	}
+	if config.Logging.Enabled && config.Logging.FilePath == "" {
+		homeDir, _ := os.UserHomeDir()
+		config.Logging.FilePath = filepath.Join(homeDir, ".gdaudit", "audit.log")
 	}
 
 	// Validate configuration
@@ -87,6 +93,7 @@ func SaveConfig(config *Config, path string) error {
 	v.Set("dry_run", config.DryRun)
 	v.Set("credentials_path", config.CredentialsPath)
 	v.Set("impersonate_user", config.ImpersonateUser)
+	v.Set("logging", config.Logging)
 
 	if err := v.WriteConfig(); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)

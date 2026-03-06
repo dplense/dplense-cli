@@ -28,8 +28,9 @@ func NewUserRevoker(driveClient gdrive.DriveClient, cfg *config.Config, log logg
 	}
 }
 
-// RevokeUserFromFiles revokes a specific user's access from all files in the scan result
-func (ur *UserRevoker) RevokeUserFromFiles(ctx context.Context, email string, scanResult *models.ScanResult) error {
+// RevokeUserFromFiles revokes a specific user's access from all files in the scan result.
+// Returns the number of permissions revoked (or that would be revoked in dry-run) and the number of files affected.
+func (ur *UserRevoker) RevokeUserFromFiles(ctx context.Context, email string, scanResult *models.ScanResult) (revokedCount int, filesAffected int, err error) {
 	// Find all files shared with this email
 	filesToRevoke := make([]models.FileIssue, 0)
 	for _, issue := range scanResult.Issues {
@@ -52,20 +53,20 @@ func (ur *UserRevoker) RevokeUserFromFiles(ctx context.Context, email string, sc
 
 	if len(filesToRevoke) == 0 {
 		ur.logger.Info("No files found shared with user: %s", email)
-		return nil
+		return 0, 0, nil
 	}
 
 	ur.logger.Info("Found %d files to revoke access from: %s", len(filesToRevoke), email)
 
 	// Revoke user from each file
-	revokedCount := 0
+	revoked := 0
 	failedCount := 0
 
 	for _, issue := range filesToRevoke {
 		// Get all permissions for the file
-		permissions, err := ur.driveClient.ListPermissions(ctx, issue.FileID)
-		if err != nil {
-			ur.logger.Error("Failed to list permissions for file: fileID=%s, error=%v", issue.FileID, err)
+		permissions, listErr := ur.driveClient.ListPermissions(ctx, issue.FileID)
+		if listErr != nil {
+			ur.logger.Error("Failed to list permissions for file: fileID=%s, error=%v", issue.FileID, listErr)
 			failedCount++
 			continue
 		}
@@ -76,29 +77,29 @@ func (ur *UserRevoker) RevokeUserFromFiles(ctx context.Context, email string, sc
 				if ur.dryRun {
 					ur.logger.Info("[DRY-RUN] Would revoke permission: fileID=%s, fileName=%s, permissionID=%s, email=%s, role=%s",
 						issue.FileID, issue.FileName, perm.ID, email, perm.Role)
-					revokedCount++
+					revoked++
 				} else {
-					if err := ur.driveClient.DeletePermission(ctx, issue.FileID, perm.ID); err != nil {
-						ur.logger.Error("Failed to revoke permission: fileID=%s, permissionID=%s, error=%v", issue.FileID, perm.ID, err)
+					if delErr := ur.driveClient.DeletePermission(ctx, issue.FileID, perm.ID); delErr != nil {
+						ur.logger.Error("Failed to revoke permission: fileID=%s, permissionID=%s, error=%v", issue.FileID, perm.ID, delErr)
 						failedCount++
 						continue
 					}
 					ur.logger.Info("Revoked permission: fileID=%s, fileName=%s, permissionID=%s, email=%s, role=%s",
 						issue.FileID, issue.FileName, perm.ID, email, perm.Role)
-					revokedCount++
+					revoked++
 				}
 			}
 		}
 	}
 
 	if ur.dryRun {
-		ur.logger.Info("[DRY-RUN] Would revoke %d permissions from %d files: %s", revokedCount, len(filesToRevoke), email)
+		ur.logger.Info("[DRY-RUN] Would revoke %d permissions from %d files: %s", revoked, len(filesToRevoke), email)
 	} else {
-		ur.logger.Info("Revoked %d permissions from %d files: %s", revokedCount, len(filesToRevoke), email)
+		ur.logger.Info("Revoked %d permissions from %d files: %s", revoked, len(filesToRevoke), email)
 		if failedCount > 0 {
 			ur.logger.Warn("%d permissions failed to revoke", failedCount)
 		}
 	}
 
-	return nil
+	return revoked, len(filesToRevoke), nil
 }

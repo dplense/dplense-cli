@@ -28,12 +28,13 @@ func NewFileRevoker(driveClient gdrive.DriveClient, cfg *config.Config, log logg
 	}
 }
 
-// RevokeExternalPermissions revokes all external permissions from a file
-func (fr *FileRevoker) RevokeExternalPermissions(ctx context.Context, fileID string) error {
+// RevokeExternalPermissions revokes all external permissions from a file.
+// Returns the number of permissions revoked (or that would be revoked in dry-run).
+func (fr *FileRevoker) RevokeExternalPermissions(ctx context.Context, fileID string) (int, error) {
 	// Get all permissions for the file
 	permissions, err := fr.driveClient.ListPermissions(ctx, fileID)
 	if err != nil {
-		return fmt.Errorf("failed to list permissions for file %s: %w", fileID, err)
+		return 0, fmt.Errorf("failed to list permissions for file %s: %w", fileID, err)
 	}
 
 	// Filter to external permissions only
@@ -56,7 +57,7 @@ func (fr *FileRevoker) RevokeExternalPermissions(ctx context.Context, fileID str
 
 	if len(externalPerms) == 0 {
 		fr.logger.Info("No external permissions found on file: fileID=%s", fileID)
-		return nil
+		return 0, nil
 	}
 
 	// Revoke each external permission
@@ -69,7 +70,7 @@ func (fr *FileRevoker) RevokeExternalPermissions(ctx context.Context, fileID str
 		} else {
 			if err := fr.driveClient.DeletePermission(ctx, fileID, perm.ID); err != nil {
 				fr.logger.Error("Failed to revoke permission: fileID=%s, permissionID=%s, error=%v", fileID, perm.ID, err)
-				return fmt.Errorf("failed to revoke permission %s: %w", perm.ID, err)
+				return revokedCount, fmt.Errorf("failed to revoke permission %s: %w", perm.ID, err)
 			}
 			fr.logger.Info("Revoked permission: fileID=%s, permissionID=%s, type=%s, email=%s, domain=%s, role=%s",
 				fileID, perm.ID, perm.Type, perm.EmailAddress, perm.Domain, perm.Role)
@@ -83,7 +84,7 @@ func (fr *FileRevoker) RevokeExternalPermissions(ctx context.Context, fileID str
 		fr.logger.Info("Revoked %d external permissions from file: %s", revokedCount, fileID)
 	}
 
-	return nil
+	return revokedCount, nil
 }
 
 // RevokeUserFromFile revokes a specific user's access from a file

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"gdrive-audit/internal/auth"
 	"gdrive-audit/internal/logger"
+	"gdrive-audit/pkg/config"
 	"gdrive-audit/pkg/gdrive"
 
 	admin "google.golang.org/api/admin/directory/v1"
@@ -16,12 +18,17 @@ type service struct {
 	logger       logger.Logger
 }
 
-// NewService creates a new Directory service client
-func NewService(adminService *admin.Service, log logger.Logger) gdrive.DirectoryClient {
+// NewService creates a new Directory service client with built-in authentication.
+// Handles authentication internally using credentials from config.
+func NewService(ctx context.Context, cfg *config.Config, log logger.Logger) (gdrive.DirectoryClient, error) {
+	adminService, err := auth.NewDirectoryService(ctx, cfg.CredentialsPath, cfg.ImpersonateUser)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize Directory service: %w", err)
+	}
 	return &service{
 		adminService: adminService,
 		logger:       log,
-	}
+	}, nil
 }
 
 // ListUsers lists users (active or suspended based on suspended parameter)
@@ -52,6 +59,8 @@ func (s *service) ListUsers(ctx context.Context, suspended bool) ([]gdrive.User,
 			return nil, fmt.Errorf("failed to list users: %w", err)
 		}
 
+		s.logger.Info("Users.List API: returned %d users (suspended=%v), hasNextPage=%v", len(r.Users), suspended, r.NextPageToken != "")
+
 		for _, u := range r.Users {
 			users = append(users, gdrive.User{
 				ID:           u.Id,
@@ -68,6 +77,7 @@ func (s *service) ListUsers(ctx context.Context, suspended bool) ([]gdrive.User,
 		pageToken = r.NextPageToken
 	}
 
+	s.logger.Info("Users.List completed: total %d users (suspended=%v)", len(users), suspended)
 	return users, nil
 }
 
@@ -82,6 +92,8 @@ func (s *service) GetUser(ctx context.Context, email string) (*gdrive.User, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user %s: %w", email, err)
 	}
+
+	s.logger.Info("Users.Get API: email=%s, name=%s, suspended=%v", u.PrimaryEmail, u.Name.FullName, u.Suspended)
 
 	return &gdrive.User{
 		ID:           u.Id,

@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/drivelabels/v2"
 	"google.golang.org/api/option"
 )
 
@@ -47,4 +48,30 @@ func NewDriveService(ctx context.Context, credentialsPath, impersonateUser strin
 	}
 
 	return drive.NewService(ctx, option.WithCredentialsJSON(b), option.WithScopes(scopes...))
+}
+
+// NewLabelsService creates a new Drive Labels API service using Service Account authentication
+func NewLabelsService(ctx context.Context, credentialsPath, impersonateUser string) (*drivelabels.Service, error) {
+	b, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read credentials file %s: %w", credentialsPath, err)
+	}
+
+	scopes := LabelsScopes()
+
+	if impersonateUser != "" {
+		config, err := google.JWTConfigFromJSON(b, scopes...)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse service account key for labels: %w", err)
+		}
+		config.Subject = impersonateUser
+
+		service, err := drivelabels.NewService(ctx, option.WithTokenSource(config.TokenSource(ctx)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Labels service: %w", err)
+		}
+		return service, nil
+	}
+
+	return drivelabels.NewService(ctx, option.WithCredentialsJSON(b), option.WithScopes(scopes...))
 }

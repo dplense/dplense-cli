@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"gdrive-audit/pkg/models"
 
@@ -29,17 +30,8 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 		return nil
 	}
 
-	// Print summary
-	fmt.Fprintf(writer, "\n%s\n", strings.Repeat("=", 120))
-	fmt.Fprintf(writer, "Scan Results Summary\n")
-	fmt.Fprintf(writer, "%s\n", strings.Repeat("=", 120))
-	fmt.Fprintf(writer, "Scope: %s\n", result.Metadata.Scope)
-	fmt.Fprintf(writer, "Files Scanned: %d\n", result.Metadata.TotalFilesScanned)
-	fmt.Fprintf(writer, "Issues Found: %d\n", result.Metadata.IssuesFound)
-	if result.Metadata.DurationSeconds > 0 {
-		fmt.Fprintf(writer, "Duration: %.2f seconds\n", result.Metadata.DurationSeconds)
-	}
-	fmt.Fprintf(writer, "%s\n\n", strings.Repeat("=", 120))
+	// Print styled summary box
+	writeSummaryBox(result, writer)
 
 	// Print results - one entry per file with all external shares listed
 	entryNum := 0
@@ -70,7 +62,8 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 		fmt.Fprintf(writer, "[%d] File: %s\n", entryNum, issue.FileName)
 		fmt.Fprintf(writer, "    File ID: %s\n", issue.FileID)
 		fmt.Fprintf(writer, "    Drive: %s\n", issue.DriveName)
-		
+		fmt.Fprintf(writer, "    Label: %s\n", issue.Label)
+
 		fullPath := issue.FolderPath
 		if fullPath == "" {
 			fullPath = "/"
@@ -104,8 +97,80 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 		fmt.Fprintln(writer, strings.Repeat("-", 120))
 	}
 
-	fmt.Fprintf(writer, "\n%s\n", strings.Repeat("=", 120))
+	fmt.Fprintln(writer)
 	return nil
+}
+
+// writeSummaryBox renders a styled summary box at the top of the table output.
+func writeSummaryBox(result *models.ScanResult, writer io.Writer) {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(8)
+	valueStyle := lipgloss.NewStyle().Bold(true)
+
+	// Count issues by risk level (use highest risk per file)
+	riskCounts := map[models.RiskLevel]int{}
+	for _, issue := range result.Issues {
+		maxRisk := models.RiskLevel("")
+		for _, perm := range issue.Permissions {
+			if perm.IsInternal {
+				continue
+			}
+			if maxRisk == "" || riskOrder(perm.RiskLevel) > riskOrder(maxRisk) {
+				maxRisk = perm.RiskLevel
+			}
+		}
+		if maxRisk != "" {
+			riskCounts[maxRisk]++
+		}
+	}
+
+	// Build risk breakdown with colored labels
+	riskParts := []string{}
+	dot := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" · ")
+	for _, level := range []models.RiskLevel{models.RiskCritical, models.RiskHigh, models.RiskMedium, models.RiskLow} {
+		count, ok := riskCounts[level]
+		if !ok || count == 0 {
+			continue
+		}
+		part := fmt.Sprintf("%d %s", count, level)
+		switch level {
+		case models.RiskCritical:
+			riskParts = append(riskParts, criticalStyle.Render(part))
+		case models.RiskHigh:
+			riskParts = append(riskParts, highStyle.Render(part))
+		case models.RiskMedium:
+			riskParts = append(riskParts, mediumStyle.Render(part))
+		case models.RiskLow:
+			riskParts = append(riskParts, lowStyle.Render(part))
+		}
+	}
+
+	// Build content lines
+	lines := []string{
+		titleStyle.Render("Scan Results"),
+		"",
+		labelStyle.Render("Scope") + "  " + result.Metadata.Scope,
+		labelStyle.Render("Files") + "  " + valueStyle.Render(fmt.Sprintf("%d", result.Metadata.TotalFilesScanned)) +
+			" scanned, " + valueStyle.Render(fmt.Sprintf("%d", result.Metadata.IssuesFound)) + " with issues",
+	}
+
+	if len(riskParts) > 0 {
+		lines = append(lines, labelStyle.Render("Risk") + "  " + strings.Join(riskParts, dot))
+	}
+
+	if result.Metadata.DurationSeconds > 0 {
+		d := time.Duration(result.Metadata.DurationSeconds * float64(time.Second))
+		lines = append(lines, labelStyle.Render("Time") + "  " + formatDuration(d))
+	}
+
+	content := strings.Join(lines, "\n")
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("69")).
+		Padding(0, 1)
+
+	fmt.Fprintf(writer, "\n%s\n\n", boxStyle.Render(content))
 }
 
 // getInternalUsersSummary returns a comma-separated list of internal users

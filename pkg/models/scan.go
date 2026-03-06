@@ -20,6 +20,7 @@ type FileIssue struct {
 	OwnerEmail  string       `json:"owner_email"`
 	OwnerName   string       `json:"owner_name,omitempty"`
 	FolderPath  string       `json:"folder_path"`
+	Label       string       `json:"label"`
 	WebViewLink string       `json:"web_view_link"`
 	Permissions []Permission `json:"permissions"`
 }

@@ -60,7 +60,7 @@ func TestRevokeUserFromFiles_MultipleFiles(t *testing.T) {
 		},
 	})
 
-	err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
+	_, _, err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestRevokeUserFromFiles_DryRun(t *testing.T) {
 		},
 	})
 
-	err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
+	_, _, err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRevokeUserFromFiles_ListPermissionsError(t *testing.T) {
 		},
 	})
 
-	err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
+	_, _, err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestRevokeUserFromFiles_NoMatchingFiles(t *testing.T) {
 		},
 	})
 
-	err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
+	_, _, err := revoker.RevokeUserFromFiles(context.Background(), "external@other.com", scanResult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
