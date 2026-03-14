@@ -420,7 +420,7 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File, opts ScanOp
 	} else if len(file.Labels) > 0 {
 		label = strings.Join(file.Labels, "; ")
 	} else {
-		label = "Unclassified"
+		label = "Unlabeled"
 	}
 
 	// Create file issue
@@ -479,4 +479,3 @@ func (s *Scanner) processFile(ctx context.Context, file gdrive.File, opts ScanOp
 
 	return &issue
 }
-

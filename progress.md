@@ -530,3 +530,134 @@ Implemented a comprehensive set of improvements based on UX analysis of all CLI 
 - Updated README.MD to match actual code: corrected report strategies, revoke flags, added examples
 
 **Testing**: `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+
+---
+
+## Date: 2026-03-06
+
+---
+
+## 18. Fixed Duplicated Output & Spinner Mixing
+
+**Files**: `internal/report/progress.go`, `internal/audit/scanner.go`, `internal/audit/scope.go`
+
+**Problems fixed**:
+1. **Duplicated summary**: `FinishWithResult()` printed "Scan complete: X files, Y issues..." AND the table's summary box showed the same info
+2. **Spinner/logger mixing**: `logger.Print` wrote to stderr simultaneously with spinner, causing text concatenation on the same line
+3. **Race condition**: `fmt.Fprint` in spinner goroutine was outside mutex
+
+**Changes**:
+- Renamed `FinishWithResult(result)` → `Stop()` — removed text summary (table summary box is sufficient)
+- Changed `logger.Print` → `logger.Info` in `scanner.go` and `scope.go` to avoid mixing with spinner
+- Moved `fmt.Fprint` inside mutex in spinner goroutine
+- Updated caller in `scan.go`: `progressReporter.FinishWithResult(result)` → `progressReporter.Stop()`
+
+**Testing**: `go build ./...` ✅, `go test ./...` ✅
+
+---
+
+## 19. Fixed Default Scope Config Override
+
+**File**: `~/.gdaudit/config.yaml`
+
+**Problem**: Config file had `default_scope: active` which overrides the code default, causing 401 errors when scanning without explicit `--scope` flag.
+
+**Change**: `default_scope: active` → `default_scope: shared-drives`
+
+---
+
+## 20. Fixed user: Scope 401 Error
+
+**File**: `internal/audit/scope.go`
+
+**Problem**: `resolveUser()` required Directory API (admin.directory.user.readonly scope) which returned 401 when scope not authorized. The function hard-failed instead of falling back.
+
+**Changes**:
+- `resolveUser` now gracefully falls back: tries Directory API first, if fails creates Target from email directly
+- Changed log level from `Warn` to `Info` for Directory API fallback message (avoids scary output mixed with spinner)
+
+**Testing**: `go build ./...` ✅, `go test ./...` ✅
+
+---
+
+## 21. Unified --filter Flag
+
+**Files**: `cmd/gdaudit/scan.go`
+
+**Problem**: Three separate flags (`--shared-with`, `--public`, `--risk-level`) were verbose and inconsistent.
+
+**Changes**:
+- Replaced three flags with single `--filter` using key:value syntax (repeatable via `StringArrayVar`)
+- Added `parseFilters()` function that converts filter strings to `ScanOptions`
+- Updated help text with syntax and examples
+
+**Supported filters**:
+- `--filter shared-with:*@gmail.com` — files shared with email/pattern
+- `--filter public` — only "Anyone with link" files
+- `--filter risk:critical,high` — only issues at given risk levels
+
+**Examples**:
+```bash
+gdaudit scan --filter shared-with:*@gmail.com
+gdaudit scan --filter public --filter risk:critical
+```
+
+**Testing**: `go build ./...` ✅, `go test ./...` ✅
+
+---
+
+## 22. Classification Labels in Scan Output
+
+**Files** (11 files modified/created):
+
+**Problem**: No visibility into Google Drive document classification labels. Users couldn't see which files were labeled (e.g., "Confidential") and which were unclassified.
+
+**Architecture**:
+- Drive Labels API (`drivelabels/v2`) fetches all published organization labels
+- Label Resolver maps opaque label/field/choice IDs to human-readable names
+- `ListFiles` conditionally includes `labelInfo` when labels are configured
+- Three-state label field: actual name / "Unclassified" / "Cannot be retrieved"
+
+**Changes**:
+
+| File | Change |
+|------|--------|
+| `internal/auth/scopes.go` | Added `drive.labels.readonly` to `RequiredScopes`, new `LabelsScopes()` |
+| `internal/auth/service_account.go` | Added `NewLabelsService()` for Drive Labels API |
+| `internal/labels/resolver.go` | **New file**: fetches org labels, maps IDs to names, resolves selection fields |
+| `pkg/gdrive/client.go` | Added `Labels []string` to `File`, `SetIncludeLabels` to `DriveClient` interface |
+| `internal/drive/client.go` | Added `includeLabels`, `labelResolver`, label parsing in `ListFiles`, `ConfigureLabelResolver` helper |
+| `pkg/models/scan.go` | Added `Label string` to `FileIssue` |
+| `internal/audit/scanner.go` | Added `labelsAvailable` flag and `SetLabelsAvailable()`, sets Label on each issue |
+| `cmd/gdaudit/scan.go` | Initializes label resolver with graceful fallback, wires up to drive client |
+| `internal/report/table.go` | Added `Label:` row in file output |
+| `internal/report/csv.go` | Added `Label` column after `Drive Name` |
+| `pkg/gdrive/mocks/drive_mock.go` | Added `SetIncludeLabels` no-op for interface compliance |
+
+**Graceful degradation**: If Labels API scope not authorized in domain-wide delegation:
+- `labels.NewResolver()` fails → labels not configured
+- Scan runs normally without labels API calls
+- Label field shows `"Cannot be retrieved"` in output
+
+**Three label states**:
+1. **Label name** (e.g., "Confidential") — file has label, Labels API available
+2. **"Unclassified"** — Labels API available but file has no labels
+3. **"Cannot be retrieved"** — Labels API scope not configured
+
+**Testing**: `go build ./...` ✅, `go test ./...` ✅
+
+---
+
+## 23. Fixed 401 Auth Error from Labels Scope in DriveScopes
+
+**File**: `internal/auth/scopes.go`
+
+**Problem**: `drive.labels.readonly` was mistakenly added to `DriveScopes()`, which is used by `NewDriveService()`. Since Google Admin hadn't authorized this scope for domain-wide delegation, the **entire Drive service** failed with 401 "unauthorized_client" — breaking all scanning.
+
+**Change**: Removed `drive.labels.readonly` from `DriveScopes()`. Scope remains in:
+- `RequiredScopes` — for documentation/instructions to admins
+- `LabelsScopes()` — used only by `NewLabelsService()` (separate auth token)
+
+**Impact**: Drive service now requests only 2 scopes (`drive.readonly`, `drive.metadata.readonly`). Labels API uses its own separate auth token with `drive.labels.readonly`.
+
+**Testing**: `go build ./...` ✅, `go test ./...` ✅
