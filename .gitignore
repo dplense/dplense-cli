@@ -78,6 +78,5 @@ package.json
 #suplemental files
 .claude/
 .cursor/
-.github/
 .speckit/
 .specify/
