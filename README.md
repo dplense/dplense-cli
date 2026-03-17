@@ -1,37 +1,38 @@
-# GDrive Audit
+# DPlense CLI
 
-**gdaudit** CLI tool for auditing Google Drive permissions. It helps to analyze and remediate external file shares across Google Workspace.
+**dplense** is a multi-cloud security audit CLI tool. It scans cloud storage for external file shares, public links, and permission risks across Google Drive, Microsoft 365, and Slack.
 
 ## Features
 
-- **Scanning**: Scan active users, suspended users, shared drives, or specific users
-- **Filtering**: Filter by external email patterns (with wildcard support), public links, or specific domains
-- **Multiple Output Formats**: Generate reports in table, JSON, CSV, or Excel formats
-- **Interactive TUI**: EXPEREMENTAL!! Terminal user interface with real-time progress and detailed file views
-- **Permission Revocation**: Safely revoke external permissions from files or users
+- **Multi-Provider**: Google Drive, Microsoft 365 (SharePoint + OneDrive), Slack
+- **Scanning**: Scan shared drives, active/suspended users, or specific accounts
+- **Filtering**: Filter by email patterns (wildcards), public links, risk levels
+- **Multiple Output Formats**: Table, JSON, CSV, Excel reports
+- **Interactive TUI**: Terminal UI for browsing issues, viewing details, and revoking permissions
+- **Permission Revocation**: Safely revoke external permissions with dry-run by default
 - **Configurable**: YAML-based configuration with domain whitelisting/blacklisting
-- **Color-Coded Output**: Visual indicators for status, risk levels, and log messages
-- **Progress Tracking**: Real-time progress bars and detailed scanning statistics
+- **Progress Tracking**: Real-time progress with ETA and per-drive statistics
 
 ## Installation
 
 ### Prerequisites
 
-- Go 1.19 or later
-- Google Workspace Admin access
-- Service Account with Domain-Wide Delegation configured
+- Go 1.25 or later
+- Provider-specific credentials (see Quick Start below)
+
+### Install with Go
+
+```bash
+go install github.com/dplense/dplense-cli/cmd/dplense@latest
+```
 
 ### Build from Source
 
 ```bash
-git clone https://gitlab.da.local/admins/gdrive-audit.git
-cd gdrive-audit
-go build -o gdaudit ./cmd/gdaudit
+git clone https://github.com/dplense/dplense-cli.git
+cd dplense-cli
+go build -o dplense ./cmd/dplense
 ```
-
-### Binary Installation
-
-Download the latest release binary for your platform and add it to your PATH.
 
 ## Quick Start
 
@@ -40,11 +41,11 @@ Download the latest release binary for your platform and add it to your PATH.
 Run the interactive setup wizard:
 
 ```bash
-gdaudit init
+dplense init
 ```
 
 This will:
-- Create configuration directory (`~/.gdaudit/`)
+- Create configuration directory (`~/.dplense/`)
 - Guide you through setting up credentials
 - Create a default configuration file
 
@@ -66,120 +67,147 @@ This will:
 
 3. **Place Credentials**:
    ```bash
-   cp /path/to/credentials.json ~/.gdaudit/credentials.json
+   cp /path/to/credentials.json ~/.dplense/credentials.json
    ```
 
 ### 3. Run Your First Scan
 
 ```bash
 # Scan shared drives
-gdaudit scan --scope shared-drives
+dplense scan --scope shared-drives
 
 # Scan with impersonation (required for domain-wide delegation)
-gdaudit scan --scope shared-drives --impersonate admin@yourdomain.com
+dplense scan --scope shared-drives --impersonate admin@yourdomain.com
 ```
 
 ## Configuration
 
-Configuration file is located at `~/.gdaudit/config.yaml`. Example:
+Configuration file is located at `~/.dplense/config.yaml`. Example:
 
 ```yaml
 # Internal domains (not considered external)
 internal_domains:
   - yourdomain.com
-  - trusted-partner.com
+  - subsidiary.com
 
 # Trusted domains (lower risk)
 trusted_domains:
   - partner.com
 
-# Drive filtering
-included_drives: []  # Empty = all drives, or specify drive names/IDs
-excluded_drives:
-  - "Archive Drive"
-  - "0AA4VQp02CjVdUk9PVA"
+# Google-specific settings
+google:
+  credentials_path: ~/.dplense/credentials.json
+  impersonate_user: admin@yourdomain.com
+  included_drives: []   # Empty = all drives
+  excluded_drives:
+    - "Archive Drive"
 
 # Default settings
 default_scope: shared-drives
-dry_run: true  # Safety default
-credentials_path: ~/.gdaudit/credentials.json
-impersonate_user: admin@yourdomain.com
+dry_run: true  # Safety default for revoke operations
 ```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `DPLENSE_CREDENTIALS` | Path to Google credentials file |
+| `DPLENSE_IMPERSONATE` | User email for domain-wide delegation |
+| `DPLENSE_DEBUG` | Enable debug logging (`1` or `true`) |
+| `DPLENSE_MS_TENANT_ID` | Microsoft 365 tenant ID |
+| `DPLENSE_MS_CLIENT_ID` | Microsoft 365 client ID |
+| `DPLENSE_MS_CLIENT_SECRET` | Microsoft 365 client secret |
+| `DPLENSE_SLACK_BOT_TOKEN` | Slack bot token |
 
 ## Usage
 
 ### Scan Command
 
-Scan Google Drive for security issues.
+Scan cloud storage for security issues.
 
 ```bash
-gdaudit scan [flags]
+dplense scan [flags]
 ```
+
+#### Providers
+
+- `google` (default) — Google Drive
+- `microsoft` — SharePoint + OneDrive
+- `slack` — Slack files and channels
 
 #### Scopes
 
-- `active` - Scan all active users
-- `suspended` - Scan all suspended users
-- `shared-drives` - Scan all shared drives
-- `user:<email>` - Scan specific user (e.g., `user:john@example.com`)
+- `shared-drives` — Scan all shared drives (Google)
+- `active` — Scan all active users
+- `suspended` — Scan all suspended users
+- `user:<email>` — Scan specific user
+- `sharepoint` — Scan SharePoint sites (Microsoft)
+- `onedrive` — Scan OneDrive (Microsoft)
+- `all` — Scan everything (Slack)
 
 #### Flags
 
 | Flag | Description | Example |
 |------|-------------|---------|
+| `--provider` | Cloud provider | `--provider microsoft` |
 | `--scope` | Scan scope | `--scope shared-drives` |
-| `--shared-with` | Filter by email pattern (supports wildcards) | `--shared-with "*@competitor.com"` |
-| `--public` | Only show files with public "Anyone with Link" permissions | `--public` |
-| `--interactive`, `-i` | Launch interactive TUI dashboard | `--interactive` |
-| `--format` | Output format: `table`, `json`, or `csv` | `--format json` |
-| `--output` | Write results to file (auto-detects format from extension) | `--output results.json` |
-| `--list-drives` | List all drives/targets without scanning | `--list-drives` |
-| `--credentials` | Path to service account JSON file | `--credentials ./creds.json` |
-| `--impersonate` | User email for domain-wide delegation | `--impersonate admin@domain.com` |
-| `--debug` | Enable debug logging | `--debug` |
-| `--verbose`, `-v` | Enable verbose output | `--verbose` |
+| `--filter` | Filter results (repeatable) | `--filter shared-with:*@gmail.com` |
+| `--interactive`, `-i` | Launch interactive TUI | `-i` |
+| `--format` | Output format: `table`, `json`, `csv` | `--format json` |
+| `--output` | Write results to file | `--output results.json` |
+| `--list-drives` | List all drives without scanning | `--list-drives` |
+| `--credentials` | Path to credentials file | `--credentials ./creds.json` |
+| `--impersonate` | User email for delegation | `--impersonate admin@domain.com` |
+
+#### Filter Syntax
+
+Filters can be combined with multiple `--filter` flags:
+
+- `--filter shared-with:*@gmail.com` — Files shared with email/pattern
+- `--filter public` — Only files with "Anyone with link" access
+- `--filter risk:critical,high` — Only issues at given risk levels
 
 #### Examples
 
 ```bash
 # Basic scan of shared drives
-gdaudit scan --scope shared-drives
+dplense scan
 
-# Scan and output to JSON file
-gdaudit scan --scope shared-drives --output results.json
+# Scan Microsoft 365 SharePoint
+dplense scan --provider microsoft --scope sharepoint
+
+# Scan Slack
+dplense scan --provider slack --scope all
+
+# Output to JSON file
+dplense scan --output results.json
 
 # Find files shared with specific domain
-gdaudit scan --scope shared-drives --shared-with "*@competitor.com"
+dplense scan --filter shared-with:*@competitor.com
 
-# Find files shared with users matching pattern
-gdaudit scan --scope shared-drives --shared-with "admin*@example.com"
-
-# Find only public files
-gdaudit scan --scope shared-drives --public
+# Find public files with critical risk
+dplense scan --filter public --filter risk:critical
 
 # Interactive TUI mode
-gdaudit scan --scope shared-drives --interactive
+dplense scan -i
 
 # List drives without scanning
-gdaudit scan --scope shared-drives --list-drives
+dplense scan --list-drives
 
 # Scan specific user
-gdaudit scan --scope user:john@example.com
-
-# Scan with custom credentials
-gdaudit scan --scope shared-drives --credentials ./my-creds.json --impersonate admin@domain.com
+dplense scan --scope user:john@example.com
 ```
 
 ### Revoke Command
 
-Revoke external permissions from Google Drive files.
+Revoke external permissions from files.
 
 ```bash
 # Revoke permissions from a specific file
-gdaudit revoke file <file_id> [flags]
+dplense revoke file <file_id> [flags]
 
 # Revoke a user's access from all files
-gdaudit revoke user <email> [flags]
+dplense revoke user <email> [flags]
 ```
 
 #### Flags
@@ -188,52 +216,28 @@ gdaudit revoke user <email> [flags]
 |------|-------------|
 | `--confirm` | Actually apply changes (default is dry-run/preview) |
 | `--user` | Revoke only this specific user (for `revoke file`) |
-| `--input` | Path to JSON from `gdaudit scan --output` (for `revoke user`) |
+| `--input` | Path to JSON from `dplense scan --output` (for `revoke user`) |
 
 #### Examples
 
 ```bash
 # Preview revoking all external permissions from a file
-gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz
+dplense revoke file 1BxiMVs0Xzy5dD1KZzJz
 
-# Actually revoke all external permissions from a file
-gdaudit revoke file 1BxiMVs0Xzy5dD1KZzJz --confirm
+# Actually revoke (requires --confirm)
+dplense revoke file 1BxiMVs0Xzy5dD1KZzJz --confirm
 
-# Preview revoking user from all files in scan results
-gdaudit revoke user external@competitor.com --input results.json
-
-# Actually revoke user from all files
-gdaudit revoke user external@competitor.com --input results.json --confirm
+# Revoke user from all files in scan results
+dplense revoke user external@competitor.com --input results.json --confirm
 ```
 
 ### Report Command
 
-Generate reports from previous scan results.
+Generate Excel reports from scan results.
 
 ```bash
-gdaudit report [flags]
-```
-
-#### Flags
-
-| Flag | Description | Example |
-|------|-------------|---------|
-| `--input` | Input JSON from `gdaudit scan --output` (required) | `--input scan-results.json` |
-| `--format` | Output format: `xlsx` or `excel` | `--format xlsx` |
-| `--output` | Output file path (auto-generated from input if omitted) | `--output report.xlsx` |
-| `--strategy` | Excel grouping: `flat` (single sheet) or `by-owner` (sheet per owner) | `--strategy by-owner` |
-
-#### Examples
-
-```bash
-# Generate Excel report (output auto-generated as results.xlsx)
-gdaudit report --input results.json
-
-# Generate Excel report with explicit output
-gdaudit report --input results.json --output report.xlsx
-
-# Generate Excel report grouped by owner
-gdaudit report --input results.json --strategy by-owner
+dplense report --input results.json
+dplense report --input results.json --strategy by-owner --output report.xlsx
 ```
 
 ### Init Command
@@ -241,93 +245,27 @@ gdaudit report --input results.json --strategy by-owner
 Interactive wizard to set up configuration and credentials.
 
 ```bash
-gdaudit init
+dplense init
 ```
-
-This command guides you through:
-- Creating configuration directory
-- Setting up credentials file path
-- Configuring default scope
-- Setting up internal/trusted domains
-
-## Output Formats
-
-### Table Format (Default)
-
-Human-readable table output with color-coded risk levels:
-- 🔴 **Critical** - Public files or high-risk external shares
-- 🟠 **High** - External shares with write access
-- 🟡 **Medium** - External shares with comment access
-- 🟢 **Low** - External shares with read-only access
-
-### JSON Format
-
-Structured JSON output suitable for automation and integration:
-
-```json
-{
-  "metadata": {
-    "scope": "shared-drives",
-    "total_files_scanned": 1234,
-    "issues_found": 56,
-    "scan_duration": "5m23s"
-  },
-  "issues": [
-    {
-      "file_id": "...",
-      "file_name": "...",
-      "owner_email": "...",
-      "permissions": [...]
-    }
-  ]
-}
-```
-
-### CSV Format
-
-Comma-separated values for spreadsheet import.
-
-### Excel Format
-
-Rich Excel reports with:
-- Color-coded risk levels
-- Multiple sheets (by file, by user, by risk)
-- Formatted cells and headers
-
-## Pattern Matching
-
-The `--shared-with` flag supports wildcard patterns:
-
-- `*@example.com` - Matches all emails from example.com domain
-- `user*@example.com` - Matches emails starting with "user" from example.com
-- `*user@example.com` - Matches emails ending with "user" from example.com
-- `*user*@example.com` - Matches emails containing "user" anywhere
-- `exact@example.com` - Exact email match
 
 ## Interactive TUI
 
-Launch the interactive terminal user interface:
+Launch with `dplense scan -i`:
 
-```bash
-gdaudit scan --scope shared-drives --interactive
-```
-
-Features:
-- Real-time progress bar
-- Live file scanning statistics
-- Navigable list of security issues
-- Detailed file permission views
-- Color-coded risk levels
-- Keyboard navigation (arrow keys, Enter, Esc)
+- Browse files with external permissions
+- View detailed file info, internal users, and external shares
+- Revoke permissions directly from the TUI
+- Filter by file/drive name
+- Keyboard: `↑↓` navigate, `Enter` open, `/` search, `r` revoke, `o` open in browser, `q` quit
 
 ## Risk Levels
 
-Files are categorized by risk level based on permission type and access level:
-
-- **Critical**: Public "Anyone with Link" permissions
-- **High**: External users with "Writer" or "Owner" role
-- **Medium**: External users with "Commenter" role
-- **Low**: External users with "Reader" role
+| Level | Color | Description |
+|-------|-------|-------------|
+| **Critical** | Red | Public "Anyone with Link" permissions |
+| **High** | Orange | External users with write/organizer access |
+| **Medium** | Yellow | External users with read/comment access |
+| **Low** | Green | Internal users |
 
 ## Troubleshooting
 
@@ -335,7 +273,6 @@ Files are categorized by risk level based on permission type and access level:
 
 **Error**: `unauthorized_client` or `401`
 
-**Solution**:
 1. Verify domain-wide delegation is configured in Google Admin Console
 2. Ensure service account has correct scopes authorized
 3. Check that `--impersonate` flag is set with a valid admin user
@@ -343,7 +280,6 @@ Files are categorized by risk level based on permission type and access level:
 
 ### No Files Found
 
-**Possible causes**:
 1. Scope doesn't match any targets (check with `--list-drives`)
 2. All files are filtered out by internal/trusted domain settings
 3. Drive access restrictions (check service account permissions)
@@ -352,76 +288,7 @@ Files are categorized by risk level based on permission type and access level:
 
 **Error**: `403: The attempted action requires shared drive membership`
 
-**Solution**: Ensure the service account has access to the shared drives you're trying to scan. This may require adding the service account as a member of the shared drive.
-
-## Configuration Reference
-
-### Configuration File Location
-
-Default: `~/.gdaudit/config.yaml`
-
-Override with: `--config /path/to/config.yaml`
-
-### Configuration Options
-
-| Option | Type | Description | Default |
-|--------|------|-------------|---------|
-| `internal_domains` | `[]string` | Domains not considered external | `[]` |
-| `trusted_domains` | `[]string` | Domains with lower risk scoring | `[]` |
-| `included_drives` | `[]string` | Whitelist of drives to scan (empty = all) | `[]` |
-| `excluded_drives` | `[]string` | Blacklist of drives to skip | `[]` |
-| `default_scope` | `string` | Default scan scope | `active` |
-| `dry_run` | `bool` | Safety default for revoke operations | `true` |
-| `credentials_path` | `string` | Path to service account JSON | `~/.gdaudit/credentials.json` |
-| `impersonate_user` | `string` | Default user for impersonation | `""` |
-
-## Examples
-
-### Example 1: Find All External Shares
-
-```bash
-gdaudit scan --scope shared-drives --output external-shares.json
-```
-
-### Example 2: Find Files Shared with Competitor Domain
-
-```bash
-gdaudit scan --scope shared-drives \
-  --shared-with "*@competitor.com" \
-  --output competitor-shares.json
-```
-
-### Example 3: Generate Excel Report
-
-```bash
-# Scan and save results
-gdaudit scan --scope shared-drives --output scan-results.json
-
-# Generate Excel report (output auto-generated as scan-results.xlsx)
-gdaudit report --input scan-results.json
-
-# Or with explicit output and grouping
-gdaudit report --input scan-results.json --strategy by-owner --output security-report.xlsx
-```
-
-### Example 4: Interactive Audit
-
-```bash
-gdaudit scan --scope shared-drives --interactive
-```
-
-### Example 5: Revoke External User Access
-
-```bash
-# First, scan to find files
-gdaudit scan --scope shared-drives --shared-with "external@competitor.com" --output results.json
-
-# Preview revocation (dry-run by default)
-gdaudit revoke user external@competitor.com --input results.json
-
-# Actually revoke (requires --confirm)
-gdaudit revoke user external@competitor.com --input results.json --confirm
-```
+Ensure the service account has access to the shared drives. This may require adding the service account as a member of the shared drive.
 
 ## Contributing
 
@@ -431,18 +298,13 @@ Contributions are welcome! Please:
 2. Create a feature branch
 3. Make your changes
 4. Add tests if applicable
-5. Submit a merge request
+5. Submit a pull request
 
 ## License
 
-[Add your license here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Support
 
-For issues, questions, or contributions:
-- Issue Tracker: [GitLab Issues](https://gitlab.da.local/admins/gdrive-audit/-/issues)
-- Repository: [GitLab Repository](https://gitlab.da.local/admins/gdrive-audit)
-
-## Version
-
-Current version: **0.1.0**
+- [GitHub Issues](https://github.com/dplense/dplense-cli/issues)
+- [GitHub Repository](https://github.com/dplense/dplense-cli)

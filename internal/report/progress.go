@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -29,8 +29,9 @@ type ProgressReporter struct {
 	targetName   string
 
 	// ETA tracking
-	scanStartTime    time.Time
-	completedTargets int
+	completedTargets  int
+	lastTargetStart   time.Time
+	completedDuration time.Duration // total time of completed targets only
 
 	done chan struct{}
 }
@@ -94,12 +95,9 @@ func (pr *ProgressReporter) etaSuffix() string {
 	if pr.completedTargets == 0 || pr.targetTotal == 0 {
 		return ""
 	}
-	elapsed := time.Since(pr.scanStartTime)
-	avgPerTarget := elapsed / time.Duration(pr.completedTargets)
-	remaining := pr.targetTotal - pr.targetIdx
-	if pr.targetIdx < pr.targetTotal {
-		remaining++
-	}
+	// Average based only on completed targets (excludes current in-progress target)
+	avgPerTarget := pr.completedDuration / time.Duration(pr.completedTargets)
+	remaining := pr.targetTotal - pr.completedTargets
 	eta := avgPerTarget * time.Duration(remaining)
 	if eta > time.Second {
 		return fmt.Sprintf(" — ~%s left", formatETA(eta))
@@ -115,10 +113,9 @@ func (pr *ProgressReporter) SetTarget(idx, total int, name string) {
 	// If this is not the first target, the previous one just completed
 	if pr.targetIdx > 0 && idx > pr.targetIdx {
 		pr.completedTargets++
+		pr.completedDuration += time.Since(pr.lastTargetStart)
 	}
-	if pr.scanStartTime.IsZero() {
-		pr.scanStartTime = time.Now()
-	}
+	pr.lastTargetStart = time.Now()
 	pr.targetIdx = idx
 	pr.targetTotal = total
 	pr.targetName = name
@@ -139,6 +136,34 @@ func (pr *ProgressReporter) Stop() {
 		// Small delay to let the goroutine clear the line
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// PrintStatus prints a plain status message, clearing the spinner line first.
+func (pr *ProgressReporter) PrintStatus(msg string) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	fmt.Fprint(pr.writer, "\r\033[K")
+	fmt.Fprintln(pr.writer, msg)
+}
+
+// LogWriter returns an io.Writer that safely interleaves log output with the
+// spinner. When the spinner is active, each write clears the spinner line first,
+// prints the log message, and lets the next spinner tick redraw the status line.
+func (pr *ProgressReporter) LogWriter() io.Writer {
+	return &spinnerAwareWriter{pr: pr}
+}
+
+type spinnerAwareWriter struct {
+	pr *ProgressReporter
+}
+
+func (w *spinnerAwareWriter) Write(p []byte) (int, error) {
+	w.pr.mu.Lock()
+	defer w.pr.mu.Unlock()
+
+	// Clear the spinner line, print the log message, spinner redraws on next tick
+	fmt.Fprint(w.pr.writer, "\r\033[K")
+	return w.pr.writer.Write(p)
 }
 
 // riskOrder returns a numeric order for risk levels (higher = more severe).

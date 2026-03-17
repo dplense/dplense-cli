@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 func TestWriteTable(t *testing.T) {

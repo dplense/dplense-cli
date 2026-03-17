@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -30,16 +30,13 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 		return nil
 	}
 
-	// Print styled summary box
-	writeSummaryBox(result, writer)
-
 	// Print results - one entry per file with all external shares listed
 	entryNum := 0
 	for _, issue := range result.Issues {
 		// Separate internal and external permissions
 		internalPerms := []models.Permission{}
 		externalPerms := []models.Permission{}
-		
+
 		for _, perm := range issue.Permissions {
 			if perm.IsInternal {
 				internalPerms = append(internalPerms, perm)
@@ -47,17 +44,17 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 				externalPerms = append(externalPerms, perm)
 			}
 		}
-		
+
 		// Skip files with no external shares
 		if len(externalPerms) == 0 {
 			continue
 		}
-		
+
 		entryNum++
-		
+
 		// Entry separator
 		fmt.Fprintln(writer, strings.Repeat("-", 120))
-		
+
 		// File information
 		fmt.Fprintf(writer, "[%d] File: %s\n", entryNum, issue.FileName)
 		fmt.Fprintf(writer, "    File ID: %s\n", issue.FileID)
@@ -69,12 +66,12 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 			fullPath = "/"
 		}
 		fmt.Fprintf(writer, "    Path: %s\n", fullPath)
-		
+
 		// Link
 		if issue.WebViewLink != "" {
 			fmt.Fprintf(writer, "    Link: %s\n", issue.WebViewLink)
 		}
-		
+
 		// Internal users - list all internal users for this file
 		if len(internalPerms) > 0 {
 			fmt.Fprintf(writer, "    Internal Users:\n")
@@ -83,7 +80,7 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 				fmt.Fprintf(writer, "      %d. %s (Role: %s)\n", idx+1, sharedWith, perm.Role)
 			}
 		}
-		
+
 		// External shares - list all external users for this file
 		fmt.Fprintf(writer, "    External Shares:\n")
 		for idx, perm := range externalPerms {
@@ -92,23 +89,38 @@ func WriteTable(result *models.ScanResult, writer io.Writer) error {
 			fmt.Fprintf(writer, "      %d. %s (Role: %s, Risk: %s)\n", idx+1, sharedWith, perm.Role, riskLevel)
 		}
 	}
-	
+
 	if entryNum > 0 {
 		fmt.Fprintln(writer, strings.Repeat("-", 120))
 	}
 
-	fmt.Fprintln(writer)
+	// Print summary box at the end
+	writeSummaryBox(result, writer)
+
 	return nil
 }
 
-// writeSummaryBox renders a styled summary box at the top of the table output.
+// driveRiskStats holds per-drive issue counts by risk level.
+type driveRiskStats struct {
+	total    int
+	critical int
+	high     int
+	medium   int
+	low      int
+}
+
+// writeSummaryBox renders a styled summary box at the end of the table output.
 func writeSummaryBox(result *models.ScanResult, writer io.Writer) {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(8)
 	valueStyle := lipgloss.NewStyle().Bold(true)
 
-	// Count issues by risk level (use highest risk per file)
+	// Count issues by risk level (use highest risk per file) and per-drive stats
 	riskCounts := map[models.RiskLevel]int{}
+	driveStats := map[string]*driveRiskStats{} // driveName -> stats
+	// Track insertion order for stable output
+	driveOrder := []string{}
+
 	for _, issue := range result.Issues {
 		maxRisk := models.RiskLevel("")
 		for _, perm := range issue.Permissions {
@@ -121,6 +133,29 @@ func writeSummaryBox(result *models.ScanResult, writer io.Writer) {
 		}
 		if maxRisk != "" {
 			riskCounts[maxRisk]++
+
+			// Per-drive breakdown
+			driveName := issue.DriveName
+			if driveName == "" {
+				driveName = "Unknown Drive"
+			}
+			stats, ok := driveStats[driveName]
+			if !ok {
+				stats = &driveRiskStats{}
+				driveStats[driveName] = stats
+				driveOrder = append(driveOrder, driveName)
+			}
+			stats.total++
+			switch maxRisk {
+			case models.RiskCritical:
+				stats.critical++
+			case models.RiskHigh:
+				stats.high++
+			case models.RiskMedium:
+				stats.medium++
+			case models.RiskLow:
+				stats.low++
+			}
 		}
 	}
 
@@ -161,6 +196,33 @@ func writeSummaryBox(result *models.ScanResult, writer io.Writer) {
 	if result.Metadata.DurationSeconds > 0 {
 		d := time.Duration(result.Metadata.DurationSeconds * float64(time.Second))
 		lines = append(lines, labelStyle.Render("Time") + "  " + formatDuration(d))
+	}
+
+	// Per-drive breakdown (only drives with issues)
+	if len(driveStats) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, titleStyle.Render("Issues by Drive"))
+		for _, driveName := range driveOrder {
+			stats := driveStats[driveName]
+			parts := []string{}
+			if stats.critical > 0 {
+				parts = append(parts, criticalStyle.Render(fmt.Sprintf("%d critical", stats.critical)))
+			}
+			if stats.high > 0 {
+				parts = append(parts, highStyle.Render(fmt.Sprintf("%d high", stats.high)))
+			}
+			if stats.medium > 0 {
+				parts = append(parts, mediumStyle.Render(fmt.Sprintf("%d medium", stats.medium)))
+			}
+			if stats.low > 0 {
+				parts = append(parts, lowStyle.Render(fmt.Sprintf("%d low", stats.low)))
+			}
+			name := driveName
+			if len(name) > 30 {
+				name = name[:27] + "..."
+			}
+			lines = append(lines, fmt.Sprintf("  %-30s %s", name, strings.Join(parts, dot)))
+		}
 	}
 
 	content := strings.Join(lines, "\n")

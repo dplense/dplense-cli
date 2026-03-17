@@ -3,7 +3,7 @@ package filter
 import (
 	"strings"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 // IsInAllowlist checks if an email or domain is in the trusted allowlist

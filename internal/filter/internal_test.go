@@ -3,7 +3,7 @@ package filter
 import (
 	"testing"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 func TestIsInternalDomain(t *testing.T) {

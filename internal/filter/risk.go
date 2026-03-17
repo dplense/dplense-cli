@@ -1,6 +1,6 @@
 package filter
 
-import "gdrive-audit/pkg/models"
+import "github.com/dplense/dplense-cli/pkg/models"
 
 // CalculateRiskLevel calculates the risk level for a permission based on various factors
 func CalculateRiskLevel(perm models.Permission, isPublic bool, isExternal bool) models.RiskLevel {
@@ -11,15 +11,13 @@ func CalculateRiskLevel(perm models.Permission, isPublic bool, isExternal bool) 
 
 	// High: External users with write/owner access
 	if isExternal {
-		if perm.Role == "owner" || perm.Role == "writer" {
+		if perm.Role == "owner" || perm.Role == "writer" || perm.Role == "fileOrganizer" || perm.Role == "organizer" {
 			return models.RiskHigh
 		}
-		// Medium: External users with read access
-		if perm.Role == "reader" || perm.Role == "commenter" {
-			return models.RiskMedium
-		}
+		// Medium: External users with read/commenter access (or any other role)
+		return models.RiskMedium
 	}
 
-	// Low: Internal users or unknown cases
+	// Low: Internal users
 	return models.RiskLow
 }

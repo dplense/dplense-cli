@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 // WriteExcel writes scan results to an Excel file with multiple sheets

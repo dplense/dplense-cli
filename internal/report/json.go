@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 // WriteJSON writes scan results as JSON to the writer

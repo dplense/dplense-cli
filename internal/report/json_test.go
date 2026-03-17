@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 func TestWriteJSON(t *testing.T) {

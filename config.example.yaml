@@ -1,0 +1,44 @@
+# DPlense CLI Configuration
+# Copy this file to ~/.dplense/config.yaml and edit as needed.
+
+# Domains that belong to your organization (not flagged as external)
+internal_domains:
+  - yourdomain.com
+  - subsidiary.com
+
+# External domains you trust (flagged but lower risk)
+trusted_domains:
+  - trusted-partner.com
+
+# Default scan scope
+default_scope: shared-drives
+
+# Safety default: revoke commands require --confirm to apply changes
+dry_run: true
+
+# Default provider: google, microsoft, or slack
+default_provider: google
+
+# Google Drive settings
+google:
+  credentials_path: ~/.dplense/credentials.json
+  impersonate_user: admin@yourdomain.com
+  included_drives: []   # Empty = scan all drives
+  excluded_drives:
+    # - "Archive Drive"
+    # - "0AA4VQp02CjVdUk9PVA"
+
+# Microsoft 365 settings (SharePoint + OneDrive)
+# microsoft:
+#   tenant_id: your-tenant-id
+#   client_id: your-client-id
+#   client_secret: your-client-secret  # Consider using DPLENSE_MS_CLIENT_SECRET env var
+
+# Slack settings
+# slack:
+#   bot_token: xoxb-...  # Consider using DPLENSE_SLACK_BOT_TOKEN env var
+
+# Logging
+logging:
+  enabled: false
+  file_path: ~/.dplense/audit.log

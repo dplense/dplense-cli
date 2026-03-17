@@ -49,6 +49,7 @@ type Logger interface {
 	Error(format string, args ...interface{})
 	Print(format string, args ...interface{}) // User-facing output without timestamp/level
 	WithContext(ctx context.Context) Logger
+	SetOutput(w io.Writer) // Replace the terminal writer (e.g. for spinner-aware output)
 }
 
 // LogEntry represents a structured log entry
@@ -234,6 +235,12 @@ func (l *loggerImpl) Error(format string, args ...interface{}) {
 // Does NOT write to the log file — use Info() for audit trail entries.
 func (l *loggerImpl) Print(format string, args ...interface{}) {
 	fmt.Fprintf(l.output, format+"\n", args...)
+}
+
+// SetOutput replaces the terminal writer. Use this to redirect log output
+// through a spinner-aware writer that clears the progress line before printing.
+func (l *loggerImpl) SetOutput(w io.Writer) {
+	l.output = w
 }
 
 // ParseLevel parses a log level string

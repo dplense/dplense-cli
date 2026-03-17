@@ -3,7 +3,7 @@ package filter
 import (
 	"testing"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 func TestCalculateRiskLevel(t *testing.T) {
@@ -63,6 +63,39 @@ func TestCalculateRiskLevel(t *testing.T) {
 				Type:  "user",
 				Email: "external@domain.com",
 				Role:  "commenter",
+			},
+			isPublic:   false,
+			isExternal: true,
+			expected:   models.RiskMedium,
+		},
+		{
+			name: "external fileOrganizer is high",
+			perm: models.Permission{
+				Type:  "user",
+				Email: "external@domain.com",
+				Role:  "fileOrganizer",
+			},
+			isPublic:   false,
+			isExternal: true,
+			expected:   models.RiskHigh,
+		},
+		{
+			name: "external organizer is high",
+			perm: models.Permission{
+				Type:  "user",
+				Email: "external@domain.com",
+				Role:  "organizer",
+			},
+			isPublic:   false,
+			isExternal: true,
+			expected:   models.RiskHigh,
+		},
+		{
+			name: "external unknown role is medium",
+			perm: models.Permission{
+				Type:  "user",
+				Email: "external@gmail.com",
+				Role:  "someNewRole",
 			},
 			isPublic:   false,
 			isExternal: true,

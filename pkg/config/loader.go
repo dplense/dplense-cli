@@ -52,14 +52,17 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// Migrate deprecated top-level Google fields to nested config
+	config.MigrateGoogleConfig()
+
 	// Apply defaults if not set
 	if config.CredentialsPath == "" {
 		homeDir, _ := os.UserHomeDir()
-		config.CredentialsPath = filepath.Join(homeDir, ".gdaudit", "credentials.json")
+		config.CredentialsPath = filepath.Join(homeDir, ".dplense", "credentials.json")
 	}
 	if config.Logging.Enabled && config.Logging.FilePath == "" {
 		homeDir, _ := os.UserHomeDir()
-		config.Logging.FilePath = filepath.Join(homeDir, ".gdaudit", "audit.log")
+		config.Logging.FilePath = filepath.Join(homeDir, ".dplense", "audit.log")
 	}
 
 	// Validate configuration
@@ -70,7 +73,8 @@ func LoadConfig(path string) (*Config, error) {
 	return config, nil
 }
 
-// SaveConfig saves the configuration to the specified path
+// SaveConfig saves the configuration to the specified path.
+// The file is created with 0600 permissions to protect secrets.
 func SaveConfig(config *Config, path string) error {
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
@@ -78,7 +82,7 @@ func SaveConfig(config *Config, path string) error {
 
 	// Ensure config directory exists
 	configDir := filepath.Dir(path)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -86,17 +90,30 @@ func SaveConfig(config *Config, path string) error {
 	v.SetConfigType("yaml")
 	v.SetConfigFile(path)
 
-	// Set values
+	// Provider-agnostic
+	v.Set("default_provider", config.DefaultProvider)
 	v.Set("internal_domains", config.InternalDomains)
 	v.Set("trusted_domains", config.TrustedDomains)
 	v.Set("default_scope", config.DefaultScope)
 	v.Set("dry_run", config.DryRun)
+	v.Set("logging", config.Logging)
+
+	// Deprecated top-level Google fields (backward compat)
 	v.Set("credentials_path", config.CredentialsPath)
 	v.Set("impersonate_user", config.ImpersonateUser)
-	v.Set("logging", config.Logging)
+
+	// Provider-specific configs
+	v.Set("google", config.Google)
+	v.Set("microsoft", config.Microsoft)
+	v.Set("slack", config.Slack)
 
 	if err := v.WriteConfig(); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	// Restrict file permissions — config may contain secrets
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to set config file permissions: %w", err)
 	}
 
 	return nil

@@ -6,7 +6,8 @@
 *.dylib
 *.test
 *.out
-gdrive-audit
+dplense-cli
+dplense
 gdaudit
 
 # Test binary, built with `go test -c`
@@ -37,7 +38,7 @@ token.json
 
 # Configuration files (may contain sensitive data)
 config.yaml
-.gdaudit/
+.dplense/
 *.env
 .env*
 
@@ -73,3 +74,10 @@ docs/
 node_modules/
 package-lock.json
 package.json
+
+#suplemental files
+.claude/
+.cursor/
+.github/
+.speckit/
+.specify/

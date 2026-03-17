@@ -3,7 +3,7 @@ package filter
 import (
 	"strings"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 // IsInternalDomain checks if an email belongs to an internal domain

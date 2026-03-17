@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"gdrive-audit/pkg/models"
+	"github.com/dplense/dplense-cli/pkg/models"
 )
 
 // WriteCSV writes scan results as CSV to the writer
